@@ -30,6 +30,8 @@
 #include "SharedDefines.h"
 #include "Chat.h"
 #include "ScriptMgr.h"
+#include <algorithm>
+#include <string>
 
 
 static std::unordered_map<uint64_t, std::deque<std::string>> botCommandHistory;
@@ -345,42 +347,60 @@ std::string GetBotSpellInfo(Player* bot)
     return spellSummary.str();
 }
 
+std::string FlattenText(const std::string& input)
+{
+    std::string output = input;
+    size_t pos = 0;
+    while ((pos = output.find('\n', pos)) != std::string::npos)
+    {
+        output.replace(pos, 1, "|");
+        pos += 1;
+    }
+    return output;
+}
+
 void SendBuddyBotStateToPlayer(Player* target, Player* bot, const std::string& prompt)
 {
     if (!target || !bot || !g_EnableBotBuddyAddon) return;
 
-    // Only keep everything before instructions for the UI
     std::string state = prompt;
     std::string::size_type json_pos = state.find("You are an AI-controlled bot");
     if (json_pos != std::string::npos)
         state = state.substr(0, json_pos);
 
-    std::vector<std::string> cmds = GetBotCommandHistory(bot);
-    std::string lastCmd = cmds.empty() ? "None" : cmds.back();
-
-    std::vector<std::string> reasons = GetBotReasoningHistory(bot);
-    std::string lastReason = reasons.empty() ? "None" : reasons.back();
-
-    // Replace all '\n' with ' || ' so the message stays as one line
-    auto flatten = [](const std::string& input) {
-        std::string output = input;
-        size_t pos = 0;
-        while ((pos = output.find('\n', pos)) != std::string::npos) {
-            output.replace(pos, 1, " || ");
-            pos += 4;
-        }
-        return output;
+    auto get_section = [&](const std::string& start, const std::string& stop) -> std::string {
+        auto s = state.find(start);
+        if (s == std::string::npos) return "";
+        s += start.size();
+        auto e = state.find(stop, s);
+        if (e == std::string::npos) e = state.size();
+        return state.substr(s, e - s);
     };
 
-    std::string flatState = flatten(state);
-    std::string flatCmd = flatten(lastCmd);
-    std::string flatReason = flatten(lastReason);
+    auto get_section_to_end = [&](const std::string& start) -> std::string {
+        auto s = state.find(start);
+        if (s == std::string::npos) return "";
+        s += start.size();
+        std::string section = state.substr(s);
+        size_t first = section.find_first_not_of(" \r\n\t");
+        size_t last = section.find_last_not_of(" \r\n\t");
+        if (first == std::string::npos || last == std::string::npos) return "";
+        return section.substr(first, last - first + 1);
+    };
+
+    std::string main_state = get_section("Name:", "Your known spells:");
+    std::string spells     = get_section("Your known spells:", "Group status:");
+    std::string quests     = get_section("Active quests:", "Visible locations/objects in line of sight:");
+    std::string locations  = get_section("Visible locations/objects in line of sight:", "Visible players in area:");
+    std::string players    = get_section("Visible players in area:", "You must select one of these locations");
+    std::string commands   = get_section_to_end("Last 5 commands and their reasoning (most recent at the bottom):");
 
     if (target && target->GetSession()) {
         ChatHandler handler(target->GetSession());
-        handler.SendSysMessage(("[BUDDY_STATE] " + flatState).c_str());
-        handler.SendSysMessage(("[BUDDY_COMMAND] " + flatCmd).c_str());
-        handler.SendSysMessage(("[BUDDY_REASON] " + flatReason).c_str());
+        handler.SendSysMessage(("[BUDDY_STATE] " + FlattenText(main_state + spells + quests)).c_str());
+        handler.SendSysMessage(("[BUDDY_LOCATIONS] " + FlattenText(locations)).c_str());
+        handler.SendSysMessage(("[BUDDY_PLAYERS] " + FlattenText(players)).c_str());
+        handler.SendSysMessage(("[BUDDY_COMMANDS] " + FlattenText(commands)).c_str());
     }
 }
 
@@ -914,19 +934,22 @@ static std::string BuildBotPrompt(Player* bot)
     - DO NOT TRY TO ATTACK OR DEFEND FROM CREATURES TAGGED AS DEAD.
     - BE AGGRESSIVE, killing things around your level grants you XP to level up. Attack monsters nearby to help level up.
     - If you're under level 5 PRIORITIZE attacking Neutral creatures, but after level 5 only prioritize attacking Hostile creatures.
+    - Make sure you're using your spells, if you have the resource cost and the spell sounds like it would help in combat, use a spell command picking a logical target guid!
 
     DECISION RULE:
     - Always choose the most effective single action to level up, complete quests, gain gear, or respond to threats.
     - ANY other format or additional text reply is INVALID.
     - Base your decisions on the current game state, visible objects, group status, and your last 5 commands along with their reasoning. For example, if your previous command was to move and attack a target, and that target is still present and within range, your next action should likely be to execute an attack command.
     - If a Dead creature is tagged as Lootable, try to loot its body.
+    - Make sure to interact with friendly NPC's that are tagged as a Quest giver.
+    - DO NOT STAND ON CAMP FIRES.
     
     NAVIGATION:
     - Use ONLY GUIDs or coordinates listed in visible objects or navigation options.
     - NEVER make up IDs, GUIDs, or coordinates.
     - If nothing useful is visible, choose a waypoint or unexplored coordinate and move there.
     - If you're in a group, try to stay within 5-10 distance of another group member if you're not engaged in combat.
-    - Do not move DIRECTLY on top of other players, creatures or objects, always maintain a small distance to avoid collision issues.
+    - Do not move DIRECTLY on top of other players, creatures or objects, always maintain a distance to avoid collision issues.
 
     COMMUNICATION:
     - Be chatty only in the say field! Talk to other players, comment on things or people around you or your intentions and goals.
@@ -1058,8 +1081,8 @@ void OllamaBotControlLoop::OnUpdate(uint32 diff)
                 {
                     std::string jsonOnly = ExtractFirstJsonObject(llmReply);
                     if (!jsonOnly.empty()) {
-                        SendBuddyBotStateToPlayer(bot, bot, prompt);
                         ParseAndExecuteBotJson(bot, jsonOnly);
+                        SendBuddyBotStateToPlayer(bot, bot, prompt);
 
                     } else {
                         LOG_ERROR("server.loading", "[OllamaBotBuddy] No valid JSON object found in LLM reply: {}", llmReply);
