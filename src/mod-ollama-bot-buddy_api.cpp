@@ -95,8 +95,14 @@ namespace BotBuddyAI
                 }
             }
             
-            // Now try melee attack
-            result = ai->DoSpecificAction("attack my target", event);
+            // Now try melee attack - use proper playerbot actions
+            if (ai->IsTank(bot)) {
+                result = ai->DoSpecificAction("tank assist", event);
+            } else {
+                result = ai->DoSpecificAction("dps assist", event);
+            }
+            
+            // Fallback to melee action if assist actions fail
             if (!result) {
                 result = ai->DoSpecificAction("melee", event);
             }
@@ -126,10 +132,15 @@ namespace BotBuddyAI
                 }
             }
             
-            // Now try ranged attack
-            result = ai->DoSpecificAction("attack my target", event);
+            // Now try ranged attack - use proper playerbot actions
+            if (ai->IsTank(bot)) {
+                result = ai->DoSpecificAction("tank assist", event);
+            } else {
+                result = ai->DoSpecificAction("dps assist", event);
+            }
+            
+            // Fallback to specific ranged actions if assist fails
             if (!result) {
-                // Try specific ranged actions
                 result = ai->DoSpecificAction("shoot", event);
                 if (!result) {
                     result = ai->DoSpecificAction("cast combat spell", event);

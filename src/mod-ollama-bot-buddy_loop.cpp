@@ -1007,6 +1007,12 @@ static std::string BuildBotPrompt(Player* bot)
 
     Primary goal: Level to 80 and equip the best gear. Prioritize combat, questing and quest givers that have available quests, talking to other players and efficient progression. If no available quests or viable enemies are nearby, turn in quests, explore for new quests, dungeons, raids, professions, or gold opportunities.
 
+    CRITICAL QUEST BEHAVIOR:
+    - NEVER waste time sitting at NPCs that have no available quests for you
+    - If an NPC doesn't have "[QUEST GIVER - TURN IN READY]" or "[QUEST GIVER - QUESTS AVAILABLE]" tags, DO NOT prioritize them unless you have no other options
+    - If you tried to interact with an NPC and nothing happened, that means they have no quests - MOVE AWAY IMMEDIATELY and find something else to do
+    - Look at your command history - if you keep trying the same quest giver repeatedly, STOP and go elsewhere
+
     COMBAT RULES:
     - If you or a player in your group are under attack, IMMEDIATELY prioritize defense. Attack the enemy targeting you or your group, or escape if the enemy is much higher level.
     - During combat, do NOT disengage or move away unless your HP is low or the enemy is significantly stronger.
@@ -1027,7 +1033,12 @@ static std::string BuildBotPrompt(Player* bot)
     - ANY other format or additional text reply is INVALID.
     - Base your decisions on the current game state, visible objects, group status, and your last 5 commands along with their reasoning. For example, if your previous command was to move and attack a target, and that target is still present and within range, your next action should likely be to execute an attack command.
     - If a Dead creature is tagged as Lootable, try to loot its body.
-    - Make sure to interact with friendly NPC's that are tagged as a Quest giver.
+    - QUEST GIVER RULES: 
+      * ONLY interact with NPCs tagged as "[QUEST GIVER - TURN IN READY]" or "[QUEST GIVER - QUESTS AVAILABLE]"
+      * NEVER interact with NPCs that have no quest tags or generic "[QUEST GIVER]" without specifics
+      * If you see an NPC with no available quests, IMMEDIATELY move away and find a different target
+      * If your last command was to interact with a quest giver but you're still at the same location, that means the NPC had no quests - MOVE ELSEWHERE IMMEDIATELY
+      * Do NOT repeatedly try to interact with the same quest giver - if it didn't work the first time, that NPC has no available quests for you
     - DO NOT STAND ON CAMP FIRES.
     
     NAVIGATION:
