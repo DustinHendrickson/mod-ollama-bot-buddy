@@ -46,10 +46,166 @@ namespace BotBuddyAI
         Unit* target = ObjectAccessor::GetUnit(*bot, guid);
         if (!target || !bot->IsWithinLOSInMap(target)) return false;
 
-        // Set the target and use the AI system to handle attacking
-        bot->SetTarget(guid);
-        Event event = Event("", target->GetName());
-        return ai->DoSpecificAction("attack my target", event);
+        if (g_EnableOllamaBotBuddyDebug)
+        {
+            LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} attacking target {} (guid: {})", 
+                bot->GetName(), target->GetName(), guid.GetCounter());
+        }
+
+        // First set the target in the AI context - this is critical for combat
+        ai->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(target);
+        ai->GetAiObjectContext()->GetValue<ObjectGuid>("pull target")->Set(guid);
+        
+        // Change to combat engine to enable combat actions
+        ai->ChangeEngine(BOT_STATE_COMBAT);
+        
+        // Determine if bot is melee or ranged for proper positioning
+        bool isMelee = ai->IsMelee(bot);
+        bool isRanged = ai->IsRanged(bot);
+        float currentDistance = bot->GetDistance(target);
+        float meleeRange = ai->GetRange("melee");
+        float spellRange = ai->GetRange("spell");
+        float shootRange = ai->GetRange("shoot");
+        
+        Event event = Event("", "");
+        bool result = false;
+        
+        if (g_EnableOllamaBotBuddyDebug) {
+            LOG_INFO("server.loading", "[OllamaBotBuddy] Combat analysis - Melee: {}, Ranged: {}, Distance: {:.1f}", 
+                isMelee ? "YES" : "NO", isRanged ? "YES" : "NO", currentDistance);
+            LOG_INFO("server.loading", "[OllamaBotBuddy] Ranges - Melee: {:.1f}, Spell: {:.1f}, Shoot: {:.1f}", 
+                meleeRange, spellRange, shootRange);
+        }
+        
+        // Handle positioning based on combat type
+        if (isMelee) {
+            // For melee bots, ensure they're in melee range
+            if (currentDistance > meleeRange) {
+                // Try to reach melee range first
+                result = ai->DoSpecificAction("reach melee", event);
+                if (g_EnableOllamaBotBuddyDebug) {
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Melee bot reaching target: {}", result ? "SUCCESS" : "FAILED");
+                }
+                // If reach melee fails, try manual movement
+                if (!result) {
+                    std::ostringstream coords;
+                    coords << target->GetPositionX() << ";" << target->GetPositionY() << ";" << target->GetPositionZ();
+                    Event moveEvent = Event("", coords.str());
+                    ai->DoSpecificAction("go", moveEvent);
+                }
+            }
+            
+            // Now try melee attack
+            result = ai->DoSpecificAction("attack my target", event);
+            if (!result) {
+                result = ai->DoSpecificAction("melee", event);
+            }
+        } else if (isRanged) {
+            // For ranged bots, maintain appropriate distance
+            float optimalRange = std::min(spellRange, shootRange);
+            float minRange = 6.0f; // Minimum range for ranged combat
+            
+            if (currentDistance < minRange) {
+                // Too close for ranged - back away
+                result = ai->DoSpecificAction("flee", event);
+                if (g_EnableOllamaBotBuddyDebug) {
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Ranged bot fleeing (too close): {}", result ? "SUCCESS" : "FAILED");
+                }
+            } else if (currentDistance > optimalRange) {
+                // Too far - move closer to optimal range
+                result = ai->DoSpecificAction("reach spell", event);
+                if (g_EnableOllamaBotBuddyDebug) {
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Ranged bot reaching range: {}", result ? "SUCCESS" : "FAILED");
+                }
+                // If reach spell fails, try manual movement
+                if (!result) {
+                    std::ostringstream coords;
+                    coords << target->GetPositionX() << ";" << target->GetPositionY() << ";" << target->GetPositionZ();
+                    Event moveEvent = Event("", coords.str());
+                    ai->DoSpecificAction("go", moveEvent);
+                }
+            }
+            
+            // Now try ranged attack
+            result = ai->DoSpecificAction("attack my target", event);
+            if (!result) {
+                // Try specific ranged actions
+                result = ai->DoSpecificAction("shoot", event);
+                if (!result) {
+                    result = ai->DoSpecificAction("cast combat spell", event);
+                }
+            }
+        } else {
+            // Hybrid or unknown type - try basic attack
+            result = ai->DoSpecificAction("attack my target", event);
+        }
+        
+        if (g_EnableOllamaBotBuddyDebug)
+        {
+            LOG_INFO("server.loading", "[OllamaBotBuddy] Combat type - Melee: {}, Ranged: {}, Distance: {:.1f}, Attack result: {}", 
+                isMelee ? "YES" : "NO", isRanged ? "YES" : "NO", currentDistance, result ? "SUCCESS" : "FAILED");
+        }
+        
+        // If primary attacks fail, try dps assist as fallback
+        if (!result) {
+            result = ai->DoSpecificAction("dps assist", event);
+            if (g_EnableOllamaBotBuddyDebug)
+            {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] DPS assist action result: {}", result ? "SUCCESS" : "FAILED");
+            }
+        }
+        
+        // Final fallback - manually initiate attack using core combat mechanics
+        if (!result) {
+            // Set selection and start attack manually
+            bot->SetSelection(guid);
+            bot->SetFacingToObject(target);
+            
+            // Determine proper attack mode based on range and class
+            bool shouldMelee = (isMelee && bot->IsWithinMeleeRange(target)) || 
+                              (!isRanged && bot->IsWithinMeleeRange(target));
+            bot->Attack(target, shouldMelee);
+            
+            // Handle movement based on combat type and current distance
+            if (isMelee && currentDistance > ATTACK_DISTANCE) {
+                // Melee bots should chase target
+                bot->GetMotionMaster()->Clear();
+                bot->GetMotionMaster()->MoveChase(target);
+                if (g_EnableOllamaBotBuddyDebug) {
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Melee bot chasing target");
+                }
+            } else if (isRanged) {
+                float optimalRange = std::min(spellRange, shootRange);
+                if (currentDistance < 6.0f) {
+                    // Ranged bots should maintain distance - move away
+                    bot->GetMotionMaster()->Clear();
+                    float angle = target->GetAngle(bot);
+                    float destX = bot->GetPositionX() + cos(angle) * 10.0f;
+                    float destY = bot->GetPositionY() + sin(angle) * 10.0f;
+                    float destZ = bot->GetPositionZ();
+                    bot->GetMotionMaster()->MovePoint(0, destX, destY, destZ);
+                    if (g_EnableOllamaBotBuddyDebug) {
+                        LOG_INFO("server.loading", "[OllamaBotBuddy] Ranged bot backing away from target");
+                    }
+                } else if (currentDistance > optimalRange) {
+                    // Too far - move closer but maintain ranged distance
+                    bot->GetMotionMaster()->Clear();
+                    bot->GetMotionMaster()->MoveChase(target, 0.0f, optimalRange * 0.8f);
+                    if (g_EnableOllamaBotBuddyDebug) {
+                        LOG_INFO("server.loading", "[OllamaBotBuddy] Ranged bot moving to optimal range");
+                    }
+                }
+            }
+            
+            result = true;
+            
+            if (g_EnableOllamaBotBuddyDebug)
+            {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Manual attack initiation: SUCCESS (melee mode: {})", shouldMelee ? "YES" : "NO");
+            }
+        }
+        
+        return result;
     }
 
     bool Interact(Player* bot, ObjectGuid guid)
@@ -325,16 +481,55 @@ namespace BotBuddyAI
         SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
         if (!spellInfo) return false;
         
-        // Use the bot's AI system to handle spell casting
-        std::ostringstream cmd;
-        cmd << spellInfo->SpellName[0];
-        if (target && target != bot)
-        {
-            cmd << " on " << target->GetName();
+        // Set the target in the AI context if provided
+        if (target) {
+            ai->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(target);
+            
+            // Check range requirements for the spell
+            float spellRange = spellInfo->GetMaxRange(false);
+            float currentDistance = bot->GetDistance(target);
+            bool isMeleeSpell = spellRange <= ATTACK_DISTANCE;
+            
+            if (g_EnableOllamaBotBuddyDebug) {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Casting spell {} on target at distance {:.1f}, spell range: {:.1f}", 
+                    spellInfo->SpellName[0], currentDistance, spellRange);
+            }
+            
+            // Handle positioning for spell casting
+            Event moveEvent = Event("", "");
+            if (isMeleeSpell && !bot->IsWithinMeleeRange(target)) {
+                // Need to get into melee range for melee spells
+                ai->DoSpecificAction("reach melee", moveEvent);
+            } else if (!isMeleeSpell && currentDistance > spellRange) {
+                // Need to get into spell range for ranged spells
+                ai->DoSpecificAction("reach spell", moveEvent);
+            } else if (!isMeleeSpell && currentDistance < 5.0f && ai->IsRanged(bot)) {
+                // Ranged character too close - back away for better positioning
+                ai->DoSpecificAction("flee", moveEvent);
+            }
         }
         
-        Event event = Event("", cmd.str());
-        return ai->DoSpecificAction("cast custom spell", event);
+        // Use the spell name directly as the action
+        const char* spellName = spellInfo->SpellName[0];
+        if (!spellName || !*spellName) return false;
+        
+        Event event = Event("", "");
+        bool result = ai->DoSpecificAction(spellName, event);
+        
+        // If spell casting by name fails, try using spell ID
+        if (!result && target) {
+            // Try alternative approaches
+            std::string spellIdStr = std::to_string(spellId);
+            event = Event("", spellIdStr);
+            result = ai->DoSpecificAction("cast", event);
+        }
+        
+        if (g_EnableOllamaBotBuddyDebug) {
+            LOG_INFO("server.loading", "[OllamaBotBuddy] Spell cast result for {}: {}", 
+                spellName, result ? "SUCCESS" : "FAILED");
+        }
+        
+        return result;
     }
 
     bool Say(Player* bot, const std::string& msg)

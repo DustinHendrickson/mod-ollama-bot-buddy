@@ -665,6 +665,12 @@ std::string GetCombatSummary(Player* bot)
     std::ostringstream oss;
     bool inCombat = bot->IsInCombat();
     Unit* victim = bot->GetVictim();
+    
+    // Get bot's combat characteristics
+    PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+    bool isMelee = ai ? ai->IsMelee(bot) : false;
+    bool isRanged = ai ? ai->IsRanged(bot) : false;
+    std::string combatType = isMelee ? "MELEE" : (isRanged ? "RANGED" : "HYBRID");
 
     // Find who is attacking the bot (if anyone)
     Unit* attacker = nullptr;
@@ -694,13 +700,32 @@ std::string GetCombatSummary(Player* bot)
 
     if (inCombat)
     {
-        oss << "IN COMBAT: ";
+        oss << "IN COMBAT (" << combatType << " FIGHTER): ";
         if (victim)
         {
+            float dist = bot->GetDistance(victim);
+            bool inMeleeRange = bot->IsWithinMeleeRange(victim);
+            float spellRange = ai ? ai->GetRange("spell") : 25.0f;
+            bool inSpellRange = dist <= spellRange;
+            
             oss << "Target: " << safe_name(victim)
                 << " (guid: " << safe_guid(victim) << ")"
                 << ", Level: " << safe_level(victim)
-                << ", HP: " << safe_hp(victim) << "/" << safe_maxhp(victim);
+                << ", HP: " << safe_hp(victim) << "/" << safe_maxhp(victim)
+                << ", Distance: " << std::fixed << std::setprecision(1) << dist;
+                
+            // Range status for combat positioning
+            if (isMelee) {
+                oss << " [" << (inMeleeRange ? "IN MELEE RANGE" : "TOO FAR FOR MELEE") << "]";
+            } else if (isRanged) {
+                if (dist < 5.0f) {
+                    oss << " [TOO CLOSE - NEED TO BACK AWAY]";
+                } else if (inSpellRange) {
+                    oss << " [GOOD RANGED POSITION]";
+                } else {
+                    oss << " [TOO FAR FOR SPELLS]";
+                }
+            }
         }
         else
         {
@@ -778,7 +803,7 @@ std::string GetCombatSummary(Player* bot)
     }
     else
     {
-        oss << "NOT IN COMBAT. Your HP: " << (bot ? std::to_string(bot->GetHealth()) : "?") << "/" << (bot ? std::to_string(bot->GetMaxHealth()) : "?");
+        oss << "NOT IN COMBAT (" << combatType << " FIGHTER). Your HP: " << (bot ? std::to_string(bot->GetHealth()) : "?") << "/" << (bot ? std::to_string(bot->GetMaxHealth()) : "?");
         oss << ", Mana: " << (bot ? std::to_string(bot->GetPower(POWER_MANA)) : "?") << "/" << (bot ? std::to_string(bot->GetMaxPower(POWER_MANA)) : "?");
         oss << ", Energy: " << (bot ? std::to_string(bot->GetPower(POWER_ENERGY)) : "?") << "/" << (bot ? std::to_string(bot->GetMaxPower(POWER_ENERGY)) : "?");
     }
@@ -985,12 +1010,17 @@ static std::string BuildBotPrompt(Player* bot)
     COMBAT RULES:
     - If you or a player in your group are under attack, IMMEDIATELY prioritize defense. Attack the enemy targeting you or your group, or escape if the enemy is much higher level.
     - During combat, do NOT disengage or move away unless your HP is low or the enemy is significantly stronger.
-    - When choosing a target, move toward them if not in range. Use 'attack' only once you're within melee or casting distance (distance < 2).
+    - POSITIONING IS CRITICAL: Read your combat summary carefully to understand your role:
+      * MELEE FIGHTERS: Must be within melee range (distance < 5). If you see "TOO FAR FOR MELEE", move closer before attacking.
+      * RANGED FIGHTERS: Maintain optimal distance (5-25 yards). If you see "TOO CLOSE - NEED TO BACK AWAY", move away first. If you see "TOO FAR FOR SPELLS", move closer.
+      * Pay attention to range indicators: "IN MELEE RANGE", "GOOD RANGED POSITION", etc.
+    - When choosing a target, move toward them if not in range. Use 'attack' only once you're within proper combat distance.
     - If you're too close to your target (distance <= 0.15) then move away before attacking again.
     - DO NOT TRY TO ATTACK OR DEFEND FROM CREATURES TAGGED AS DEAD.
     - BE AGGRESSIVE, killing things around your level grants you XP to level up. Attack monsters nearby to help level up.
     - If you're under level 5 PRIORITIZE attacking Neutral creatures, but after level 5 only prioritize attacking Hostile creatures.
     - Make sure you're using your spells, if you have the resource cost and the spell sounds like it would help in combat, use a spell command picking a logical target guid!
+    - COMBAT TYPE AWARENESS: Your combat summary shows if you're a MELEE, RANGED, or HYBRID fighter. Use this to determine proper positioning and tactics.
 
     DECISION RULE:
     - Always choose the most effective single action to level up, complete quests, gain gear, or respond to threats.
