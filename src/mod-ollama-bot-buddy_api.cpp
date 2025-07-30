@@ -46,6 +46,40 @@ namespace BotBuddyAI
         Unit* target = ObjectAccessor::GetUnit(*bot, guid);
         if (!target || !bot->IsWithinLOSInMap(target)) return false;
 
+        // CRITICAL: Validate target before attacking to prevent friendly fire
+        if (!ai->IsValidAttackTarget(target, bot)) {
+            if (g_EnableOllamaBotBuddyDebug) {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Invalid attack target: {} - not attackable", target->GetName());
+            }
+            return false;
+        }
+
+        // Check if target is friendly - absolutely prevent attacking friendlies
+        if (bot->IsFriendlyTo(target)) {
+            if (g_EnableOllamaBotBuddyDebug) {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Refusing to attack friendly target: {}", target->GetName());
+            }
+            return false;
+        }
+
+        // Additional safety: check if target is in same group or guild
+        if (Player* targetPlayer = target->ToPlayer()) {
+            if (bot->IsInSameGroupWith(targetPlayer) || bot->IsInSameGuildWith(targetPlayer)) {
+                if (g_EnableOllamaBotBuddyDebug) {
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Refusing to attack group/guild member: {}", target->GetName());
+                }
+                return false;
+            }
+        }
+
+        // Check if target is dead or GM
+        if (!target->IsAlive() || (target->ToPlayer() && target->ToPlayer()->IsGameMaster())) {
+            if (g_EnableOllamaBotBuddyDebug) {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Target is dead or GM: {}", target->GetName());
+            }
+            return false;
+        }
+
         if (g_EnableOllamaBotBuddyDebug)
         {
             LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} attacking target {} (guid: {})", 
@@ -205,6 +239,27 @@ namespace BotBuddyAI
 
         if (Creature* creature = ObjectAccessor::GetCreature(*bot, guid))
         {
+            // Check interaction distance FIRST - move closer if needed
+            float distance = bot->GetDistance(creature);
+            if (distance > INTERACTION_DISTANCE)
+            {
+                // Too far - move closer first
+                if (g_EnableOllamaBotBuddyDebug) {
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} moving to interact with {} at distance {:.1f}", 
+                        bot->GetName(), creature->GetName(), distance);
+                }
+                
+                // Calculate a position close to the creature but not directly on top
+                float angle = creature->GetAngle(bot);
+                float destX = creature->GetPositionX() + cos(angle + M_PI) * 3.0f; // 3 yards away
+                float destY = creature->GetPositionY() + sin(angle + M_PI) * 3.0f;
+                float destZ = creature->GetPositionZ();
+                
+                bot->GetMotionMaster()->Clear();
+                bot->GetMotionMaster()->MovePoint(0, destX, destY, destZ);
+                return true; // Movement initiated, interaction will happen next cycle
+            }
+            
             // Check if this is a quest giver and handle quest interaction properly
             if (creature->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER))
             {
@@ -213,12 +268,35 @@ namespace BotBuddyAI
             else
             {
                 // For non-quest NPCs, use gossip hello action
+                bot->SetFacingToObject(creature);
                 Event event = Event("", std::to_string(guid.GetCounter()));
                 return ai->DoSpecificAction("gossip hello", event);
             }
         }
         else if (GameObject* go = ObjectAccessor::GetGameObject(*bot, guid))
         {
+            // Check interaction distance FIRST - move closer if needed  
+            float distance = bot->GetDistance(go);
+            float interactionDist = go->GetInteractionDistance();
+            if (distance > interactionDist)
+            {
+                // Too far - move closer first
+                if (g_EnableOllamaBotBuddyDebug) {
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} moving to interact with {} at distance {:.1f}", 
+                        bot->GetName(), go->GetName(), distance);
+                }
+                
+                // Calculate a position close to the object but not directly on top
+                float angle = go->GetAngle(bot);
+                float destX = go->GetPositionX() + cos(angle + M_PI) * 2.0f; // 2 yards away
+                float destY = go->GetPositionY() + sin(angle + M_PI) * 2.0f;
+                float destZ = go->GetPositionZ();
+                
+                bot->GetMotionMaster()->Clear();
+                bot->GetMotionMaster()->MovePoint(0, destX, destY, destZ);
+                return true; // Movement initiated, interaction will happen next cycle
+            }
+            
             // Check if this is a quest giver game object
             if (go->GetGoType() == GAMEOBJECT_TYPE_QUESTGIVER)
             {
@@ -227,6 +305,7 @@ namespace BotBuddyAI
             else
             {
                 // Use the bot's AI system to handle interaction with game objects
+                bot->SetFacingToObject(go);
                 Event event = Event("", go->GetGOInfo()->name);
                 return ai->DoSpecificAction("use", event);
             }

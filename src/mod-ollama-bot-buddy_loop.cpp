@@ -598,37 +598,57 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
             }
         }
         
-        // Check for other useful NPC types only if they're friendly/neutral and not quest givers
-        if (!isUsefulNPC && (type == "FRIENDLY" || type == "NEUTRAL")) {
+        // Check for other useful NPC types (friendly/neutral only) 
+        // Handle multiple flags - NPCs can be both quest givers AND vendors/trainers
+        if (type == "FRIENDLY" || type == "NEUTRAL") {
+            std::vector<std::string> npcTypes;
+            
             // Check for vendors
             if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_VENDOR)) {
-                questGiver = " [VENDOR]";
+                npcTypes.push_back("[VENDOR]");
                 isUsefulNPC = true;
             }
             // Check for trainers
-            else if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_TRAINER)) {
-                questGiver = " [TRAINER]";
+            if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_TRAINER)) {
+                npcTypes.push_back("[TRAINER]");
                 isUsefulNPC = true;
             }
             // Check for flight masters
-            else if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_FLIGHTMASTER)) {
-                questGiver = " [FLIGHT MASTER]";
+            if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_FLIGHTMASTER)) {
+                npcTypes.push_back("[FLIGHT MASTER]");
                 isUsefulNPC = true;
             }
             // Check for innkeepers
-            else if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_INNKEEPER)) {
-                questGiver = " [INNKEEPER]";
+            if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_INNKEEPER)) {
+                npcTypes.push_back("[INNKEEPER]");
                 isUsefulNPC = true;
             }
             // Check for bankers
-            else if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_BANKER)) {
-                questGiver = " [BANKER]";
+            if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_BANKER)) {
+                npcTypes.push_back("[BANKER]");
                 isUsefulNPC = true;
             }
             // Check for auctioneers
-            else if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_AUCTIONEER)) {
-                questGiver = " [AUCTIONEER]";
+            if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_AUCTIONEER)) {
+                npcTypes.push_back("[AUCTIONEER]");
                 isUsefulNPC = true;
+            }
+            
+            // Combine quest giver status with other NPC types
+            if (!npcTypes.empty()) {
+                if (!questGiver.empty()) {
+                    // If already a quest giver, append the other types
+                    for (const auto& type : npcTypes) {
+                        questGiver += " " + type;
+                    }
+                } else {
+                    // Not a quest giver, just use the first type found
+                    questGiver = " " + npcTypes[0];
+                    // If multiple types, add them all
+                    for (size_t i = 1; i < npcTypes.size(); ++i) {
+                        questGiver += " " + npcTypes[i];
+                    }
+                }
             }
         }
         
