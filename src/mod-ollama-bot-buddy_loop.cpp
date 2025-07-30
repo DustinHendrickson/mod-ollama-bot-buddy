@@ -982,7 +982,7 @@ static std::string BuildBotPrompt(Player* bot)
 
     oss << R"(You are an AI-controlled bot in World of Warcraft. Your task is to follow these strict rules and reply only with the listed acceptable commands:
 
-    Primary goal: Level to 80 and equip the best gear. Prioritize combat, questing and quest givers, talking to other players and efficient progression. If no quests or viable enemies are nearby, explore for new quests, dungeons, raids, professions, or gold opportunities.
+    Primary goal: Level to 80 and equip the best gear. Prioritize combat, questing and quest givers that have available quests, talking to other players and efficient progression. If no available quests or viable enemies are nearby, explore for new quests, dungeons, raids, professions, or gold opportunities.
 
     COMBAT RULES:
     - If you or a player in your group are under attack, IMMEDIATELY prioritize defense. Attack the enemy targeting you or your group, or escape if the enemy is much higher level.
