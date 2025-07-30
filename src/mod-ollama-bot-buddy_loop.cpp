@@ -977,9 +977,9 @@ std::string GetDetailedQuestInfo(Player* bot)
                         
                         oss << " - Collect " << itemName << ": " << currentCount << "/" << requiredCount;
                         if (currentCount >= requiredCount) {
-                            oss << " ✓ COMPLETE";
+                            oss << " COMPLETE";
                         } else {
-                            oss << " ✗ NEED " << (requiredCount - currentCount) << " MORE";
+                            oss << " NEED " << (requiredCount - currentCount) << " MORE";
                         }
                         oss << "\n";
                     }
@@ -996,9 +996,9 @@ std::string GetDetailedQuestInfo(Player* bot)
                     if (requiredCount > 0) {
                         oss << " - Exploration/Event objective: " << currentCount << "/" << requiredCount;
                         if (currentCount >= requiredCount) {
-                            oss << " ✓ COMPLETE";
+                            oss << " COMPLETE";
                         } else {
-                            oss << " ✗ INCOMPLETE";
+                            oss << " INCOMPLETE";
                         }
                         oss << "\n";
                     }
@@ -1006,7 +1006,7 @@ std::string GetDetailedQuestInfo(Player* bot)
             }
             
             // Show quest description for context
-            if (quest->GetObjectives() && !quest->GetObjectives().empty()) {
+            if (!quest->GetObjectives().empty()) {
                 oss << "Description: " << quest->GetObjectives() << "\n";
             }
         }
