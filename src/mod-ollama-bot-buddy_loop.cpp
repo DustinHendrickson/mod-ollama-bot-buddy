@@ -1006,7 +1006,7 @@ std::string GetDetailedQuestInfo(Player* bot)
             }
             
             // Show quest description for context
-            if (quest->GetObjectives() && strlen(quest->GetObjectives()) > 0) {
+            if (quest->GetObjectives() && !quest->GetObjectives().empty()) {
                 oss << "Description: " << quest->GetObjectives() << "\n";
             }
         }
