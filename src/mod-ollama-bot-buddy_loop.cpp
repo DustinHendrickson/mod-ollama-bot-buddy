@@ -583,12 +583,12 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
                 }
             }
             
+            // Only show quest giver tags if there are actually relevant quests
             if (hasCompleteQuests)
                 questGiver = " [QUEST GIVER - TURN IN READY]";
             else if (hasAvailableQuests)
                 questGiver = " [QUEST GIVER - QUESTS AVAILABLE]";
-            else
-                questGiver = " [QUEST GIVER]";
+            // Remove the generic [QUEST GIVER] tag - only show when there are actual quests
         }
 
         float dist = bot->GetDistance(c);
@@ -643,7 +643,7 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
 
     // Sort visible objects to prioritize quest givers with relevant quests
     std::stable_sort(visible.begin(), visible.end(), [](const std::string& a, const std::string& b) {
-        // Priority order: TURN IN READY > QUESTS AVAILABLE > regular QUEST GIVER > others
+        // Priority order: TURN IN READY > QUESTS AVAILABLE > others
         bool aTurnIn = a.find("TURN IN READY") != std::string::npos;
         bool bTurnIn = b.find("TURN IN READY") != std::string::npos;
         if (aTurnIn != bTurnIn) return aTurnIn;
@@ -652,9 +652,7 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
         bool bAvailable = b.find("QUESTS AVAILABLE") != std::string::npos;
         if (aAvailable != bAvailable) return aAvailable;
         
-        bool aQuestGiver = a.find("QUEST GIVER") != std::string::npos;
-        bool bQuestGiver = b.find("QUEST GIVER") != std::string::npos;
-        if (aQuestGiver != bQuestGiver) return aQuestGiver;
+        // Removed generic QUEST GIVER sorting since we only show relevant quest givers now
         
         return false; // Keep original order for everything else
     });
