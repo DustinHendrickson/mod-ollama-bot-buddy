@@ -12,6 +12,7 @@
 #include "GridNotifiersImpl.h"
 #include "Cell.h"
 #include "Map.h"
+#include "Event.h"
 #include <sstream>
 
 namespace BotBuddyAI
@@ -19,42 +20,52 @@ namespace BotBuddyAI
     bool MoveTo(Player* bot, float x, float y, float z)
     {
         if (!bot) return false;
-        bot->GetMotionMaster()->Clear();
-        bot->GetMotionMaster()->MovePoint(0, x, y, z);
-        return true;
+        
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+        
+        // Use the bot's AI system to handle movement using coordinate format
+        std::ostringstream coords;
+        coords << x << ";" << y << ";" << z;
+        
+        Event event = Event("", coords.str());
+        return ai->DoSpecificAction("go", event);
     }
 
     bool Attack(Player* bot, ObjectGuid guid)
     {
         if (!bot || !guid) return false;
 
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+
         Unit* target = ObjectAccessor::GetUnit(*bot, guid);
         if (!target || !bot->IsWithinLOSInMap(target)) return false;
 
-        bot->SetSelection(target->GetGUID());
-        bot->SetFacingToObject(target);
-        bot->Attack(target, true);
-        bot->GetMotionMaster()->Clear();
-        bot->GetMotionMaster()->MoveChase(target);
-
-        return true;
+        // Set the target and use the AI system to handle attacking
+        bot->SetTarget(guid);
+        Event event = Event("", target->GetName());
+        return ai->DoSpecificAction("attack my target", event);
     }
 
     bool Interact(Player* bot, ObjectGuid guid)
     {
         if (!bot || !guid) return false;
 
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+
         if (Creature* creature = ObjectAccessor::GetCreature(*bot, guid))
         {
-            bot->SetFacingToObject(creature);
-            creature->AI()->sGossipHello(bot);
-            return true;
+            // Use the bot's AI system to handle interaction with creatures
+            Event event = Event("", creature->GetName());
+            return ai->DoSpecificAction("talk to quest giver", event);
         }
         else if (GameObject* go = ObjectAccessor::GetGameObject(*bot, guid))
         {
-            bot->SetFacingToObject(go);
-            go->Use(bot);
-            return true;
+            // Use the bot's AI system to handle interaction with game objects
+            Event event = Event("", go->GetGOInfo()->name);
+            return ai->DoSpecificAction("use", event);
         }
         return false;
     }
@@ -62,81 +73,95 @@ namespace BotBuddyAI
     bool CastSpell(Player* bot, uint32 spellId, Unit* target)
     {
         if (!bot) return false;
-        if (!target) target = bot->GetVictim();
-        if (!target) return false;
-
-        bot->SetFacingToObject(target);
-        bot->CastSpell(target, spellId, false);
-        return true;
+        
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+        
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        if (!spellInfo) return false;
+        
+        // Use the bot's AI system to handle spell casting
+        std::ostringstream cmd;
+        cmd << spellInfo->SpellName[0];
+        if (target && target != bot)
+        {
+            cmd << " on " << target->GetName();
+        }
+        
+        Event event = Event("", cmd.str());
+        return ai->DoSpecificAction("cast custom spell", event);
     }
 
     bool Say(Player* bot, const std::string& msg)
     {
         if (!bot) return false;
-        bot->Say(msg, LANG_UNIVERSAL);
-        return true;
+        
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+        
+        // Use the bot's AI system to handle saying
+        Event event = Event("", msg);
+        return ai->DoSpecificAction("say", event);
     }
 
     bool FollowMaster(Player* bot)
     {
         if (!bot) return false;
+        
         PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
         if (!ai) return false;
-        Player* master = ai->GetMaster();
-        if (!master) return false;
-
-        bot->GetMotionMaster()->Clear();
-        bot->GetMotionMaster()->MoveFollow(master, 1.0f, 0.0f);
-        return true;
+        
+        // Use the bot's AI system to handle following
+        Event event = Event("", "");
+        return ai->DoSpecificAction("follow", event);
     }
 
     bool StopMoving(Player* bot)
     {
         if (!bot) return false;
-        bot->GetMotionMaster()->Clear();
-        return true;
+        
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+        
+        // Use the bot's AI system to handle stopping
+        Event event = Event("", "");
+        return ai->DoSpecificAction("stay", event);
     }
 
     bool AcceptQuest(Player* bot, uint32 questId)
     {
         if (!bot) return false;
-        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-        if (!quest) return false;
-        bot->AddQuest(quest, nullptr);
-        return true;
+        
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+        
+        // Use the playerbot AI system to accept quests
+        Event event = Event("", std::to_string(questId));
+        return ai->DoSpecificAction("accept quest", event);
     }
 
     bool TurnInQuest(Player* bot, uint32 questId)
     {
         if (!bot) return false;
-        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-        if (!quest) return false;
-        bot->CompleteQuest(questId);
-        bot->RewardQuest(quest, 0, bot);
-        return true;
+        
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+        
+        // Use the playerbot AI system to turn in quests
+        Event event = Event("", std::to_string(questId));
+        return ai->DoSpecificAction("turn in query quest", event);
     }
 
     bool LootNearby(Player* bot)
     {
         if (!bot) return false;
 
-        Map* map = bot->GetMap();
-        if (!map) return false;
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
 
-        for (const auto& pair : map->GetCreatureBySpawnIdStore())
-        {
-            Creature* creature = pair.second;
-            if (!creature || !creature->isDead()) continue;
-
-            if (!bot->IsWithinDistInMap(creature, INTERACTION_DISTANCE)) continue;
-
-            bot->SetFacingToObject(creature);
-            bot->PrepareGossipMenu(creature, creature->GetCreatureTemplate()->GossipMenuId);
-            bot->SendLoot(creature->GetGUID(), LOOT_CORPSE);
-            return true;
-        }
-
-        return false;
+        // Use the bot's AI system to handle looting
+        Event event = Event("", "");
+        return ai->DoSpecificAction("loot", event);
     }
 
 } // namespace BotBuddyAI
