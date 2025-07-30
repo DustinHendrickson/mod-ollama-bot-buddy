@@ -893,7 +893,7 @@ std::string GetDetailedQuestInfo(Player* bot)
         }
         
         oss << "\n**QUEST: " << quest->GetTitle() << "** (ID: " << questId << ") - " << statusText << "\n";
-        oss << "Level: " << quest->GetQuestLevel() << " | XP Reward: " << quest->XPValue(bot) << "\n";
+        oss << "Level: " << quest->GetQuestLevel() << " | XP Reward: " << quest->XPValue(bot->GetLevel()) << "\n";
         
         if (status == QUEST_STATUS_COMPLETE) {
             oss << "*** PRIORITY: FIND QUEST GIVER TO TURN IN THIS QUEST ***\n";
