@@ -13,6 +13,10 @@
 #include "Cell.h"
 #include "Map.h"
 #include "Event.h"
+#include "QuestDef.h"
+#include "WorldPacket.h"
+#include "WorldSession.h"
+#include "GossipDef.h"
 #include <sstream>
 
 namespace BotBuddyAI
@@ -57,16 +61,257 @@ namespace BotBuddyAI
 
         if (Creature* creature = ObjectAccessor::GetCreature(*bot, guid))
         {
-            // Use the bot's AI system to handle interaction with creatures
-            Event event = Event("", creature->GetName());
-            return ai->DoSpecificAction("talk to quest giver", event);
+            // Check if this is a quest giver and handle quest interaction properly
+            if (creature->hasQuest() || creature->hasInvolvedQuest())
+            {
+                return InteractWithQuestGiver(bot, creature);
+            }
+            else
+            {
+                // For non-quest NPCs, use gossip hello action
+                Event event = Event("", std::to_string(guid.GetCounter()));
+                return ai->DoSpecificAction("gossip hello", event);
+            }
         }
         else if (GameObject* go = ObjectAccessor::GetGameObject(*bot, guid))
         {
-            // Use the bot's AI system to handle interaction with game objects
+            // Check if this is a quest giver game object
+            if (go->GetGoType() == GAMEOBJECT_TYPE_QUESTGIVER)
+            {
+                return InteractWithQuestGiver(bot, go);
+            }
+            else
+            {
+                // Use the bot's AI system to handle interaction with game objects
+                Event event = Event("", go->GetGOInfo()->name);
+                return ai->DoSpecificAction("use", event);
+            }
+        }
+        return false;
+    }
+
+    bool InteractWithQuestGiver(Player* bot, WorldObject* questGiver)
+    {
+        if (!bot || !questGiver) return false;
+
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+
+        // Check interaction distance
+        if (bot->GetDistance(questGiver) > INTERACTION_DISTANCE)
+        {
+            return false;
+        }
+
+        // Face the quest giver
+        if (!bot->HasInArc(CAST_ANGLE_IN_FRONT, questGiver, sPlayerbotAIConfig->sightDistance))
+            bot->SetFacingToObject(questGiver);
+
+        ObjectGuid guid = questGiver->GetGUID();
+        
+        // Prepare the quest menu for this quest giver
+        bot->PrepareQuestMenu(guid);
+        QuestMenu& questMenu = bot->PlayerTalkClass->GetQuestMenu();
+
+        bool foundQuestAction = false;
+
+        // Process all available quest menu items
+        for (uint32 i = 0; i < questMenu.GetMenuItemCount(); ++i)
+        {
+            QuestMenuItem const& menuItem = questMenu.GetItem(i);
+            Quest const* quest = sObjectMgr->GetQuestTemplate(menuItem.QuestId);
+            if (!quest) continue;
+
+            QuestStatus status = bot->GetQuestStatus(menuItem.QuestId);
+            
+            // Handle completed quests first (highest priority)
+            if (status == QUEST_STATUS_COMPLETE && bot->CanRewardQuest(quest, false))
+            {
+                // Turn in the quest using the playerbot action system
+                TurnInQuest(bot, menuItem.QuestId);
+                foundQuestAction = true;
+                
+                if (g_EnableOllamaBotBuddyDebug)
+                {
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} turning in quest {}: {}", 
+                        bot->GetName(), menuItem.QuestId, quest->GetTitle());
+                }
+            }
+            // Handle new quests that can be accepted
+            else if (status == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false))
+            {
+                // Accept the quest using the playerbot action system
+                AcceptQuest(bot, menuItem.QuestId);
+                foundQuestAction = true;
+                
+                if (g_EnableOllamaBotBuddyDebug)
+                {
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} accepting quest {}: {}", 
+                        bot->GetName(), menuItem.QuestId, quest->GetTitle());
+                }
+            }
+        }
+
+        // If we found quest actions, return success
+        if (foundQuestAction)
+        {
+            return true;
+        }
+
+        // If no direct quest actions were available, try automatic gossip navigation
+        if (Creature* creature = questGiver->ToCreature())
+        {
+            // Try to automatically navigate gossip menus for quest options
+            if (AutoNavigateGossipForQuests(bot, creature))
+            {
+                return true;
+            }
+            
+            // Fallback to basic gossip hello action
+            Event event = Event("", std::to_string(guid.GetCounter()));
+            return ai->DoSpecificAction("gossip hello", event);
+        }
+        else if (GameObject* go = questGiver->ToGameObject())
+        {
+            // Use game object interaction
             Event event = Event("", go->GetGOInfo()->name);
             return ai->DoSpecificAction("use", event);
         }
+
+        return false;
+    }
+
+    bool AutoNavigateGossipForQuests(Player* bot, Creature* creature)
+    {
+        if (!bot || !creature) return false;
+
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+
+        // Start gossip interaction
+        WorldPacket packet(CMSG_GOSSIP_HELLO);
+        packet << creature->GetGUID();
+        bot->GetSession()->HandleGossipHelloOpcode(packet);
+
+        // Wait a moment for the server to process
+        if (!bot->PlayerTalkClass) return false;
+
+        GossipMenu& gossipMenu = bot->PlayerTalkClass->GetGossipMenu();
+        QuestMenu& questMenu = bot->PlayerTalkClass->GetQuestMenu();
+
+        // First priority: Handle direct quest menus
+        for (uint32 i = 0; i < questMenu.GetMenuItemCount(); ++i)
+        {
+            QuestMenuItem const& menuItem = questMenu.GetItem(i);
+            Quest const* quest = sObjectMgr->GetQuestTemplate(menuItem.QuestId);
+            if (!quest) continue;
+
+            QuestStatus status = bot->GetQuestStatus(menuItem.QuestId);
+            
+            if (status == QUEST_STATUS_COMPLETE && bot->CanRewardQuest(quest, false))
+            {
+                TurnInQuest(bot, menuItem.QuestId);
+                return true;
+            }
+            else if (status == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false))
+            {
+                AcceptQuest(bot, menuItem.QuestId);
+                return true;
+            }
+        }
+
+        // Second priority: Navigate gossip menu for quest-related options
+        GossipMenuItemContainer const& gossipItems = gossipMenu.GetMenuItems();
+        for (auto const& item : gossipItems)
+        {
+            GossipMenuItem const* gossipItem = &item.second;
+            std::string message = gossipItem->Message;
+            
+            // Look for quest-related gossip options
+            if (message.find("quest") != std::string::npos || 
+                message.find("Quest") != std::string::npos ||
+                message.find("mission") != std::string::npos ||
+                message.find("task") != std::string::npos)
+            {
+                // Select this gossip option
+                WorldPacket selectPacket(CMSG_GOSSIP_SELECT_OPTION);
+                selectPacket << creature->GetGUID();
+                selectPacket << gossipMenu.GetMenuId();
+                selectPacket << item.first;
+                selectPacket << std::string("");
+                bot->GetSession()->HandleGossipSelectOptionOpcode(selectPacket);
+                
+                if (g_EnableOllamaBotBuddyDebug)
+                {
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} selected gossip option: {}", 
+                        bot->GetName(), message);
+                }
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    bool HasQuestsAvailable(Player* bot, WorldObject* questGiver)
+    {
+        if (!bot || !questGiver) return false;
+
+        // For creatures, check their quest relations directly (more efficient)
+        if (Creature* creature = questGiver->ToCreature())
+        {
+            // Check for completable quests first (highest priority)
+            QuestRelationBounds qir = sObjectMgr->GetCreatureQuestInvolvedRelationBounds(creature->GetEntry());
+            for (QuestRelations::const_iterator itr = qir.first; itr != qir.second; ++itr)
+            {
+                uint32 questId = itr->second;
+                if (bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE && !bot->GetQuestRewardStatus(questId))
+                {
+                    return true; // Has quest ready to turn in
+                }
+            }
+            
+            // Check for available quests (secondary priority)
+            QuestRelationBounds qr = sObjectMgr->GetCreatureQuestRelationBounds(creature->GetEntry());
+            for (QuestRelations::const_iterator itr = qr.first; itr != qr.second; ++itr)
+            {
+                uint32 questId = itr->second;
+                Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+                if (quest && bot->GetQuestStatus(questId) == QUEST_STATUS_NONE && 
+                    bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false))
+                {
+                    return true; // Has quest available to accept
+                }
+            }
+        }
+        // For game objects, check quest relations
+        else if (GameObject* go = questGiver->ToGameObject())
+        {
+            // Check for completable quests
+            QuestRelationBounds qir = sObjectMgr->GetGOQuestInvolvedRelationBounds(go->GetEntry());
+            for (QuestRelations::const_iterator itr = qir.first; itr != qir.second; ++itr)
+            {
+                uint32 questId = itr->second;
+                if (bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE && !bot->GetQuestRewardStatus(questId))
+                {
+                    return true;
+                }
+            }
+            
+            // Check for available quests
+            QuestRelationBounds qr = sObjectMgr->GetGOQuestRelationBounds(go->GetEntry());
+            for (QuestRelations::const_iterator itr = qr.first; itr != qr.second; ++itr)
+            {
+                uint32 questId = itr->second;
+                Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+                if (quest && bot->GetQuestStatus(questId) == QUEST_STATUS_NONE && 
+                    bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false))
+                {
+                    return true;
+                }
+            }
+        }
+        
         return false;
     }
 
@@ -135,7 +380,10 @@ namespace BotBuddyAI
         PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
         if (!ai) return false;
         
-        // Use the playerbot AI system to accept quests
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (!quest) return false;
+
+        // Use the playerbot AI system to handle quest acceptance
         Event event = Event("", std::to_string(questId));
         return ai->DoSpecificAction("accept quest", event);
     }
@@ -147,7 +395,14 @@ namespace BotBuddyAI
         PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
         if (!ai) return false;
         
-        // Use the playerbot AI system to turn in quests
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (!quest) return false;
+
+        // Check if quest is complete
+        if (bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE)
+            return false;
+
+        // Use the playerbot AI system to handle quest turn-in
         Event event = Event("", std::to_string(questId));
         return ai->DoSpecificAction("turn in query quest", event);
     }

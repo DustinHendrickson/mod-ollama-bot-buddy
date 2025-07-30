@@ -28,6 +28,9 @@
 #include "SpellMgr.h"
 #include "SpellInfo.h"
 #include "SharedDefines.h"
+#include "QuestDef.h"
+#include "ObjectMgr.h"
+#include <algorithm>
 #include "Chat.h"
 #include "ScriptMgr.h"
 #include <algorithm>
@@ -548,7 +551,44 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
 
         std::string questGiver = "";
         if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER)) {
-            questGiver = " [QUEST GIVER]";
+            // Check if this quest giver has relevant quests for the bot
+            bool hasCompleteQuests = false;
+            bool hasAvailableQuests = false;
+            
+            // Check for completable quests first (highest priority)
+            QuestRelationBounds qir = sObjectMgr->GetCreatureQuestInvolvedRelationBounds(c->GetEntry());
+            for (QuestRelations::const_iterator itr = qir.first; itr != qir.second; ++itr)
+            {
+                uint32 questId = itr->second;
+                if (bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE && !bot->GetQuestRewardStatus(questId))
+                {
+                    hasCompleteQuests = true;
+                    break;
+                }
+            }
+            
+            // Check for available quests (secondary priority)
+            if (!hasCompleteQuests)
+            {
+                QuestRelationBounds qr = sObjectMgr->GetCreatureQuestRelationBounds(c->GetEntry());
+                for (QuestRelations::const_iterator itr = qr.first; itr != qr.second; ++itr)
+                {
+                    uint32 questId = itr->second;
+                    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+                    if (quest && bot->CanTakeQuest(quest, false))
+                    {
+                        hasAvailableQuests = true;
+                        break;
+                    }
+                }
+            }
+            
+            if (hasCompleteQuests)
+                questGiver = " [QUEST GIVER - TURN IN READY]";
+            else if (hasAvailableQuests)
+                questGiver = " [QUEST GIVER - QUESTS AVAILABLE]";
+            else
+                questGiver = " [QUEST GIVER]";
         }
 
         float dist = bot->GetDistance(c);
@@ -600,6 +640,24 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
             dist
         ));
     }
+
+    // Sort visible objects to prioritize quest givers with relevant quests
+    std::stable_sort(visible.begin(), visible.end(), [](const std::string& a, const std::string& b) {
+        // Priority order: TURN IN READY > QUESTS AVAILABLE > regular QUEST GIVER > others
+        bool aTurnIn = a.find("TURN IN READY") != std::string::npos;
+        bool bTurnIn = b.find("TURN IN READY") != std::string::npos;
+        if (aTurnIn != bTurnIn) return aTurnIn;
+        
+        bool aAvailable = a.find("QUESTS AVAILABLE") != std::string::npos;
+        bool bAvailable = b.find("QUESTS AVAILABLE") != std::string::npos;
+        if (aAvailable != bAvailable) return aAvailable;
+        
+        bool aQuestGiver = a.find("QUEST GIVER") != std::string::npos;
+        bool bQuestGiver = b.find("QUEST GIVER") != std::string::npos;
+        if (aQuestGiver != bQuestGiver) return aQuestGiver;
+        
+        return false; // Keep original order for everything else
+    });
 
     return visible;
 }

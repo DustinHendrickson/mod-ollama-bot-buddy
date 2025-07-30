@@ -42,4 +42,10 @@ namespace BotBuddyAI
     bool TurnInQuest(Player* bot, uint32 questId);
     bool LootNearby(Player* bot);
     bool Interact(Player* bot, ObjectGuid guid);
+    
+    // Quest-related helper functions
+    bool InteractWithQuestGiver(Player* bot, WorldObject* questGiver);
+    bool AutoNavigateGossipForQuests(Player* bot, Creature* creature);
+    bool HasQuestsAvailable(Player* bot, WorldObject* questGiver);
+    std::vector<Creature*> GetNearbyQuestGivers(Player* bot, float radius = 50.0f);
 }
