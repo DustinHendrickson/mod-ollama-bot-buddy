@@ -35,6 +35,8 @@
 #include "ScriptMgr.h"
 #include <algorithm>
 #include <string>
+#include "ItemTemplate.h"
+#include "CreatureData.h"
 
 
 static std::unordered_map<uint64_t, std::deque<std::string>> botCommandHistory;
@@ -860,6 +862,163 @@ std::string GetCombatSummary(Player* bot)
 }
 
 
+std::string GetDetailedQuestInfo(Player* bot)
+{
+    std::ostringstream oss;
+    
+    bool hasActiveQuests = false;
+    
+    for (auto const& qs : bot->getQuestStatusMap())
+    {
+        uint32 questId = qs.first;
+        QuestStatus status = qs.second.Status;
+        
+        // Skip abandoned, failed, or already rewarded quests
+        if (status == QUEST_STATUS_NONE || status == QUEST_STATUS_FAILED || status == QUEST_STATUS_REWARDED)
+            continue;
+            
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (!quest) continue;
+        
+        if (!hasActiveQuests) {
+            oss << "Active quests:\n";
+            hasActiveQuests = true;
+        }
+        
+        std::string statusText;
+        switch (status) {
+            case QUEST_STATUS_INCOMPLETE: statusText = "IN PROGRESS"; break;
+            case QUEST_STATUS_COMPLETE: statusText = "READY TO TURN IN"; break;
+            default: statusText = "UNKNOWN"; break;
+        }
+        
+        oss << "\n**QUEST: " << quest->GetTitle() << "** (ID: " << questId << ") - " << statusText << "\n";
+        oss << "Level: " << quest->GetQuestLevel() << " | XP Reward: " << quest->XPValue(bot) << "\n";
+        
+        if (status == QUEST_STATUS_COMPLETE) {
+            oss << "*** PRIORITY: FIND QUEST GIVER TO TURN IN THIS QUEST ***\n";
+            
+            // Find who can accept this quest turn-in
+            std::vector<std::string> turnInNPCs;
+            
+            // Check creatures that can accept this quest
+            QuestRelationBounds qir = sObjectMgr->GetCreatureQuestInvolvedRelationBounds(questId);
+            for (QuestRelations::const_iterator itr = qir.first; itr != qir.second; ++itr) {
+                CreatureTemplate const* cTemplate = sObjectMgr->GetCreatureTemplate(itr->first);
+                if (cTemplate) {
+                    turnInNPCs.push_back(std::string("NPC: ") + cTemplate->Name);
+                }
+            }
+            
+            // Check game objects that can accept this quest
+            QuestRelationBounds goQir = sObjectMgr->GetGOQuestInvolvedRelationBounds(questId);
+            for (QuestRelations::const_iterator itr = goQir.first; itr != goQir.second; ++itr) {
+                GameObjectTemplate const* goTemplate = sObjectMgr->GetGameObjectTemplate(itr->first);
+                if (goTemplate) {
+                    turnInNPCs.push_back(std::string("Object: ") + goTemplate->name);
+                }
+            }
+            
+            if (!turnInNPCs.empty()) {
+                oss << "Turn in to: ";
+                for (size_t i = 0; i < turnInNPCs.size(); ++i) {
+                    oss << turnInNPCs[i];
+                    if (i < turnInNPCs.size() - 1) oss << " OR ";
+                }
+                oss << "\n";
+            }
+        } else {
+            // Quest is incomplete - show objectives
+            oss << "Objectives to complete:\n";
+            
+            // Check kill objectives
+            for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i) {
+                if (quest->RequiredNpcOrGo[i] != 0) {
+                    uint32 currentCount = bot->GetReqKillOrCastCurrentCount(questId, quest->RequiredNpcOrGo[i]);
+                    uint32 requiredCount = quest->RequiredNpcOrGoCount[i];
+                    
+                    if (requiredCount > 0) {
+                        std::string targetName = "Unknown Target";
+                        
+                        if (quest->RequiredNpcOrGo[i] > 0) {
+                            // It's a creature
+                            CreatureTemplate const* cTemplate = sObjectMgr->GetCreatureTemplate(quest->RequiredNpcOrGo[i]);
+                            if (cTemplate) {
+                                targetName = std::string("Kill ") + cTemplate->Name;
+                            }
+                        } else {
+                            // It's a game object (negative value)
+                            GameObjectTemplate const* goTemplate = sObjectMgr->GetGameObjectTemplate(-quest->RequiredNpcOrGo[i]);
+                            if (goTemplate) {
+                                targetName = std::string("Use/Click ") + goTemplate->name;
+                            }
+                        }
+                        
+                        oss << " - " << targetName << ": " << currentCount << "/" << requiredCount;
+                        if (currentCount >= requiredCount) {
+                            oss << " ✓ COMPLETE";
+                        } else {
+                            oss << " ✗ NEED " << (requiredCount - currentCount) << " MORE";
+                        }
+                        oss << "\n";
+                    }
+                }
+            }
+            
+            // Check item objectives
+            for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i) {
+                if (quest->RequiredItemId[i] != 0) {
+                    uint32 currentCount = bot->GetItemCount(quest->RequiredItemId[i], true);
+                    uint32 requiredCount = quest->RequiredItemCount[i];
+                    
+                    if (requiredCount > 0) {
+                        ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(quest->RequiredItemId[i]);
+                        std::string itemName = itemTemplate ? itemTemplate->Name1 : "Unknown Item";
+                        
+                        oss << " - Collect " << itemName << ": " << currentCount << "/" << requiredCount;
+                        if (currentCount >= requiredCount) {
+                            oss << " ✓ COMPLETE";
+                        } else {
+                            oss << " ✗ NEED " << (requiredCount - currentCount) << " MORE";
+                        }
+                        oss << "\n";
+                    }
+                }
+            }
+            
+            // Check exploration objectives
+            for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i) {
+                if (quest->RequiredNpcOrGo[i] == 0 && quest->RequiredNpcOrGoCount[i] > 0) {
+                    // This might be an exploration or spell cast objective
+                    uint32 currentCount = bot->GetReqKillOrCastCurrentCount(questId, quest->RequiredNpcOrGo[i]);
+                    uint32 requiredCount = quest->RequiredNpcOrGoCount[i];
+                    
+                    if (requiredCount > 0) {
+                        oss << " - Exploration/Event objective: " << currentCount << "/" << requiredCount;
+                        if (currentCount >= requiredCount) {
+                            oss << " ✓ COMPLETE";
+                        } else {
+                            oss << " ✗ INCOMPLETE";
+                        }
+                        oss << "\n";
+                    }
+                }
+            }
+            
+            // Show quest description for context
+            if (quest->GetObjectives() && strlen(quest->GetObjectives()) > 0) {
+                oss << "Description: " << quest->GetObjectives() << "\n";
+            }
+        }
+    }
+    
+    if (!hasActiveQuests) {
+        oss << "No active quests. Look for quest givers with available quests or turn-ins ready!\n";
+    }
+    
+    return oss.str();
+}
+
 std::vector<std::string> GetNearbyWaypoints(Player* bot, float radius = 200.0f)
 {
     std::vector<std::string> wps;
@@ -1000,11 +1159,7 @@ static std::string BuildBotPrompt(Player* bot)
         for (const auto& entry : groupInfo) oss << " - " << entry << "\n";
     }
 
-    oss << "Active quests:\n";
-    for (auto const& qs : bot->getQuestStatusMap())
-    {
-        oss << "Quest " << qs.first << " status " << qs.second.Status << "\n";
-    }
+    oss << GetDetailedQuestInfo(bot) << "\n";
 
     std::vector<std::string> losLocs = GetVisibleLocations(bot);
     std::vector<std::string> wps = GetNearbyWaypoints(bot);
@@ -1056,6 +1211,16 @@ static std::string BuildBotPrompt(Player* bot)
 
     Primary goal: Level to 80 and equip the best gear. Prioritize combat, questing and quest givers that have available quests, talking to other players and efficient progression. If no available quests or viable enemies are nearby, turn in quests, explore for new quests, dungeons, raids, professions, or gold opportunities.
 
+    QUEST PRIORITIZATION (HIGHEST PRIORITY):
+    - If you have any quests marked "READY TO TURN IN", that is your TOP PRIORITY - find the quest giver immediately
+    - For incomplete quests, read the objectives carefully and focus on completing them:
+      * If you need to kill creatures, prioritize those specific creatures over random enemies
+      * If you need to collect items, look for the sources of those items
+      * If you need to interact with objects, find and use those objects
+      * If objectives show "✓ COMPLETE", that part is done - focus on incomplete objectives
+    - When you see quest objectives that need specific creatures or items, prioritize those targets over random combat
+    - Quest completion gives significant XP - completing quests is more efficient than random grinding
+
     CRITICAL QUEST BEHAVIOR:
     - NEVER waste time sitting at NPCs that have no available quests for you
     - If an NPC doesn't have "[QUEST GIVER - TURN IN READY]" or "[QUEST GIVER - QUESTS AVAILABLE]" tags, DO NOT prioritize them unless you have no other options
@@ -1092,6 +1257,9 @@ static std::string BuildBotPrompt(Player* bot)
     - COMBAT TYPE AWARENESS: Your combat summary shows if you're a MELEE, RANGED, or HYBRID fighter. Use this to determine proper positioning and tactics.
 
     DECISION RULE:
+    - QUEST OBJECTIVES ARE TOP PRIORITY: Always check your active quest details first and prioritize completing quest objectives
+    - If you have quests "READY TO TURN IN", find those quest givers immediately - this is your highest priority
+    - For incomplete quests, target the specific creatures or objects needed for quest objectives rather than random enemies
     - Always choose the most effective single action to level up, complete quests, gain gear, or respond to threats.
     - ANY other format or additional text reply is INVALID.
     - Base your decisions on the current game state, visible objects, group status, and your last 5 commands along with their reasoning. For example, if your previous command was to move and attack a target, and that target is still present and within range, your next action should likely be to execute an attack command.
