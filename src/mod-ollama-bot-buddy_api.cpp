@@ -383,11 +383,15 @@ namespace BotBuddyAI
             GossipMenuItem const* gossipItem = &item.second;
             std::string message = gossipItem->Message;
             
-            // Look for quest-related gossip options
+            // Look for quest-related gossip options with enhanced keyword matching
             if (message.find("quest") != std::string::npos || 
                 message.find("Quest") != std::string::npos ||
                 message.find("mission") != std::string::npos ||
-                message.find("task") != std::string::npos)
+                message.find("task") != std::string::npos ||
+                message.find("reward") != std::string::npos ||
+                message.find("complete") != std::string::npos ||
+                message.find("turn in") != std::string::npos ||
+                message.find("finish") != std::string::npos)
             {
                 // Select this gossip option
                 WorldPacket selectPacket(CMSG_GOSSIP_SELECT_OPTION);
@@ -593,13 +597,105 @@ namespace BotBuddyAI
         Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
         if (!quest) return false;
 
-        // Check if quest is complete
-        if (bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE)
+        // Check if quest is ready to turn in
+        if (bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE || bot->GetQuestRewardStatus(questId))
+        {
+            if (g_EnableOllamaBotBuddyDebug)
+            {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} cannot turn in quest {}: status={}, already rewarded={}", 
+                    bot->GetName(), questId, bot->GetQuestStatus(questId), bot->GetQuestRewardStatus(questId));
+            }
             return false;
-
-        // Use the playerbot AI system to handle quest turn-in
-        Event event = Event("", std::to_string(questId));
-        return ai->DoSpecificAction("turn in query quest", event);
+        }
+        
+        if (!bot->CanRewardQuest(quest, false))
+        {
+            if (g_EnableOllamaBotBuddyDebug)
+            {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} cannot reward quest {}: requirements not met", 
+                    bot->GetName(), questId);
+            }
+            return false;
+        }
+        
+        // Find quest giver in range
+        ObjectGuid questGiverGuid;
+        Map* map = bot->GetMap();
+        if (map)
+        {
+            for (auto const& pair : map->GetCreatureBySpawnIdStore())
+            {
+                Creature* creature = pair.second;
+                if (!creature || !bot->IsWithinDistInMap(creature, INTERACTION_DISTANCE)) continue;
+                if (!creature->hasInvolvedQuest(questId)) continue;
+                
+                questGiverGuid = creature->GetGUID();
+                break;
+            }
+            
+            // Also check game objects
+            if (!questGiverGuid)
+            {
+                for (auto const& pair : map->GetGameObjectBySpawnIdStore())
+                {
+                    GameObject* go = pair.second;
+                    if (!go || !bot->IsWithinDistInMap(go, INTERACTION_DISTANCE)) continue;
+                    if (!go->hasInvolvedQuest(questId)) continue;
+                    
+                    questGiverGuid = go->GetGUID();
+                    break;
+                }
+            }
+        }
+        
+        if (!questGiverGuid)
+        {
+            if (g_EnableOllamaBotBuddyDebug)
+            {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} cannot find quest giver for quest {}", 
+                    bot->GetName(), questId);
+            }
+            return false;
+        }
+        
+        // First, initiate quest completion dialog
+        WorldPacket completePacket(CMSG_QUESTGIVER_COMPLETE_QUEST);
+        completePacket << questGiverGuid << questId;
+        completePacket.rpos(0);
+        bot->GetSession()->HandleQuestgiverCompleteQuest(completePacket);
+        
+        // Handle quest rewards
+        uint32 rewardIndex = 0;
+        if (quest->GetRewChoiceItemsCount() > 1)
+        {
+            // Find the best reward using simple logic
+            for (uint32 i = 0; i < quest->GetRewChoiceItemsCount(); ++i)
+            {
+                if (quest->RewardChoiceItemId[i])
+                {
+                    ItemTemplate const* item = sObjectMgr->GetItemTemplate(quest->RewardChoiceItemId[i]);
+                    if (item && bot->CanUseItem(item) == EQUIP_ERR_OK)
+                    {
+                        rewardIndex = i;
+                        break; // Use first usable reward
+                    }
+                }
+            }
+        }
+        
+        // Complete the reward selection
+        WorldPacket rewardPacket(CMSG_QUESTGIVER_CHOOSE_REWARD);
+        rewardPacket << questGiverGuid << questId << rewardIndex;
+        rewardPacket.rpos(0);
+        bot->GetSession()->HandleQuestgiverChooseRewardOpcode(rewardPacket);
+        
+        if (g_EnableOllamaBotBuddyDebug)
+        {
+            LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} turned in quest {}: {} with reward index {}", 
+                bot->GetName(), questId, quest->GetTitle(), rewardIndex);
+        }
+        
+        return true;
     }
 
     bool LootNearby(Player* bot)
