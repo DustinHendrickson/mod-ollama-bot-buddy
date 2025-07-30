@@ -1182,6 +1182,7 @@ static std::string BuildBotPrompt(Player* bot)
 
     if (!losLocs.empty() || !wps.empty()) {
         oss << "You must select one of these locations or waypoints to move to, interact with, accept or turn in quests, attack, loot, or any other action or choose a new unexplored spot.\n";
+        oss << "IMPORTANT: You can ONLY attack creatures/NPCs that are listed above in the visible locations. If your quest requires creatures that are NOT visible, you must move to find them using waypoints or exploration.\n";
     }
 
     oss << FormatPlayerMessagesPromptSegment(bot);
@@ -1199,6 +1200,7 @@ static std::string BuildBotPrompt(Player* bot)
             oss << " - Command: " << cmdHist[i] << "\n";
             oss << "   Reasoning: " << reasoningHist[i] << "\n";
         }
+        oss << "\nIMPORTANT: Look at your command history above! If you keep using move_to commands to the same location, switch to interact commands instead. If you keep trying to interact with the same NPC unsuccessfully, move away to find enemies or other NPCs.\n";
     }
 
     if (g_EnableOllamaBotBuddyDebug)
@@ -1227,7 +1229,9 @@ static std::string BuildBotPrompt(Player* bot)
     - If you tried to interact with an NPC and nothing happened, that means they have no quests - MOVE AWAY IMMEDIATELY and find something else to do
     - Look at your command history - if you keep trying the same quest giver repeatedly, STOP and go elsewhere
 
-    NPC INTERACTION RULES:
+    NPC INTERACTION DECISION LOGIC:
+    - If you see an NPC within 15 yards with "[QUEST GIVER - TURN IN READY]" or "[QUEST GIVER - QUESTS AVAILABLE]" tags: USE INTERACT COMMAND
+    - If you see such an NPC beyond 15 yards: USE MOVE_TO COMMAND to get closer first
     - ONLY interact with NPCs that have useful tags: [QUEST GIVER - TURN IN READY], [QUEST GIVER - QUESTS AVAILABLE], [VENDOR], [TRAINER], [FLIGHT MASTER], [INNKEEPER], [BANKER], [AUCTIONEER]
     - NEVER interact with generic friendly NPCs that have no useful tags - they are a waste of time
     - If you see a friendly NPC with no useful tags, IGNORE IT completely and focus on combat or exploration
@@ -1240,6 +1244,14 @@ static std::string BuildBotPrompt(Player* bot)
     - RANGED fighters should maintain 6-25 yard distance from targets
     - If you're a MELEE fighter and the target is far away, use move_to command to get closer first
     - If you're a RANGED fighter and too close (distance < 6), move away before attacking
+
+    QUEST TARGET HUNTING:
+    - Look at your quest objectives and identify what creatures/items you need
+    - Check your "Visible locations/objects" list to see if those creatures are currently visible
+    - If quest target creatures ARE visible: attack them immediately (use their GUID from the visible list)
+    - If quest target creatures are NOT visible: move to a waypoint or new area to search for them
+    - NEVER try to attack creatures that aren't in your current visible list - move to find them first
+    - If no quest targets are available, attack any hostile creatures visible for XP while searching
 
     COMBAT RULES:
     - If you or a player in your group are under attack, IMMEDIATELY prioritize defense. Attack the enemy targeting you or your group, or escape if the enemy is much higher level.
@@ -1260,18 +1272,28 @@ static std::string BuildBotPrompt(Player* bot)
     - QUEST OBJECTIVES ARE TOP PRIORITY: Always check your active quest details first and prioritize completing quest objectives
     - If you have quests "READY TO TURN IN", find those quest givers immediately - this is your highest priority
     - For incomplete quests, target the specific creatures or objects needed for quest objectives rather than random enemies
+    - CRITICAL: You can ONLY interact with, attack, or move to objects/creatures that are listed in your "Visible locations/objects" section - NEVER try to attack or interact with creatures/NPCs that aren't currently visible
+    - If quest objectives require specific creatures that are NOT in your visible list, you must move to find them - use waypoints or explore new areas
     - Always choose the most effective single action to level up, complete quests, gain gear, or respond to threats.
     - ANY other format or additional text reply is INVALID.
     - Base your decisions on the current game state, visible objects, group status, and your last 5 commands along with their reasoning. For example, if your previous command was to move and attack a target, and that target is still present and within range, your next action should likely be to execute an attack command.
     - If a Dead creature is tagged as Lootable, try to loot its body.
-    - QUEST GIVER RULES: 
-      * ONLY interact with NPCs tagged as "[QUEST GIVER - TURN IN READY]" or "[QUEST GIVER - QUESTS AVAILABLE]"
+    - QUEST TARGET LOGIC:
+      * First, check if the creatures you need for quest objectives are in your visible list - if yes, attack them
+      * If quest target creatures are NOT visible, move to a waypoint or new area to search for them
+      * If no quest targets are visible and no useful NPCs are available, attack any hostile creature in your visible list for XP
+      * NEVER try to attack creatures that aren't in your current visible list - they don't exist in your current area
+    - QUEST GIVER INTERACTION LOGIC: 
+      * If you see an NPC within 15 yards with "[QUEST GIVER - TURN IN READY]" or "[QUEST GIVER - QUESTS AVAILABLE]" tags: USE INTERACT COMMAND immediately
+      * If you see such an NPC beyond 15 yards: USE MOVE_TO COMMAND to get closer first
+      * NEVER keep moving to the same quest giver if you're already close - switch to interact command
       * COMPLETELY IGNORE all other NPCs unless they have useful tags like [VENDOR], [TRAINER], [FLIGHT MASTER], [INNKEEPER], [BANKER], [AUCTIONEER]
       * NEVER interact with NPCs that have no quest tags, no useful service tags, or are just generic friendly NPCs
       * If you see an NPC with no available quests, IMMEDIATELY move away and find a different target
       * If your last command was to interact with a quest giver but you're still at the same location, that means the NPC had no quests - MOVE ELSEWHERE IMMEDIATELY
       * Do NOT repeatedly try to interact with the same quest giver - if it didn't work the first time, that NPC has no available quests for you
       * PRIORITIZE ENEMIES TO KILL over useless friendly NPCs - combat gives XP, talking to random NPCs does not
+      * IF YOUR LAST COMMAND WAS "move_to" TO A QUEST GIVER AND YOU'RE NOW CLOSE TO THEM, YOUR NEXT COMMAND SHOULD BE "interact"
     - DO NOT STAND ON CAMP FIRES.
     
     NAVIGATION:
@@ -1412,7 +1434,10 @@ void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
                     std::string jsonOnly = ExtractFirstJsonObject(llmReply);
                     if (!jsonOnly.empty()) {
                         ParseAndExecuteBotJson(bot, jsonOnly);
-                        SendBuddyBotStateToPlayer(bot, bot, prompt);
+                        
+                        // Rebuild the prompt to include the latest command in history
+                        std::string updatedPrompt = BuildBotPrompt(bot);
+                        SendBuddyBotStateToPlayer(bot, bot, updatedPrompt);
 
                     } else {
                         LOG_ERROR("server.loading", "[OllamaBotBuddy] No valid JSON object found in LLM reply: {}", llmReply);
