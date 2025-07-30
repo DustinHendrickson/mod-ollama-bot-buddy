@@ -62,7 +62,7 @@ namespace BotBuddyAI
         if (Creature* creature = ObjectAccessor::GetCreature(*bot, guid))
         {
             // Check if this is a quest giver and handle quest interaction properly
-            if (creature->hasQuest() || creature->hasInvolvedQuest())
+            if (creature->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER))
             {
                 return InteractWithQuestGiver(bot, creature);
             }

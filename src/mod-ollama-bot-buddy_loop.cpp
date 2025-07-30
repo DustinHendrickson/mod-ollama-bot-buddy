@@ -1085,7 +1085,7 @@ std::string EscapeBracesForFmt(const std::string& input) {
     return output;
 }
 
-void OllamaBotControlLoop::OnUpdate(uint32 diff)
+void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
 {
     if (!g_EnableOllamaBotControl) return;
 
