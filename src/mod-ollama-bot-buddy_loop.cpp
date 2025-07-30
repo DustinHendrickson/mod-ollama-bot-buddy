@@ -550,6 +550,9 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
         else type = "NEUTRAL";
 
         std::string questGiver = "";
+        bool isUsefulNPC = false;
+        
+        // Only consider NPCs that are actually useful to the bot
         if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER)) {
             // Check if this quest giver has relevant quests for the bot
             bool hasCompleteQuests = false;
@@ -584,11 +587,57 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
             }
             
             // Only show quest giver tags if there are actually relevant quests
-            if (hasCompleteQuests)
+            if (hasCompleteQuests) {
                 questGiver = " [QUEST GIVER - TURN IN READY]";
-            else if (hasAvailableQuests)
+                isUsefulNPC = true;
+            } else if (hasAvailableQuests) {
                 questGiver = " [QUEST GIVER - QUESTS AVAILABLE]";
-            // Remove the generic [QUEST GIVER] tag - only show when there are actual quests
+                isUsefulNPC = true;
+            }
+        }
+        
+        // Check for other useful NPC types only if they're friendly/neutral and not quest givers
+        if (!isUsefulNPC && (type == "FRIENDLY" || type == "NEUTRAL")) {
+            // Check for vendors
+            if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_VENDOR)) {
+                questGiver = " [VENDOR]";
+                isUsefulNPC = true;
+            }
+            // Check for trainers
+            else if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_TRAINER)) {
+                questGiver = " [TRAINER]";
+                isUsefulNPC = true;
+            }
+            // Check for flight masters
+            else if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_FLIGHTMASTER)) {
+                questGiver = " [FLIGHT MASTER]";
+                isUsefulNPC = true;
+            }
+            // Check for innkeepers
+            else if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_INNKEEPER)) {
+                questGiver = " [INNKEEPER]";
+                isUsefulNPC = true;
+            }
+            // Check for bankers
+            else if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_BANKER)) {
+                questGiver = " [BANKER]";
+                isUsefulNPC = true;
+            }
+            // Check for auctioneers
+            else if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_AUCTIONEER)) {
+                questGiver = " [AUCTIONEER]";
+                isUsefulNPC = true;
+            }
+        }
+        
+        // If it's an enemy or dead lootable, always show it
+        if (type == "ENEMY" || type.find("DEAD (LOOTABLE)") != std::string::npos) {
+            isUsefulNPC = true;
+        }
+        
+        // SKIP all NPCs that are not useful (no quests, not vendors, not enemies, etc.)
+        if (!isUsefulNPC) {
+            continue;
         }
 
         float dist = bot->GetDistance(c);
@@ -1013,6 +1062,20 @@ static std::string BuildBotPrompt(Player* bot)
     - If you tried to interact with an NPC and nothing happened, that means they have no quests - MOVE AWAY IMMEDIATELY and find something else to do
     - Look at your command history - if you keep trying the same quest giver repeatedly, STOP and go elsewhere
 
+    NPC INTERACTION RULES:
+    - ONLY interact with NPCs that have useful tags: [QUEST GIVER - TURN IN READY], [QUEST GIVER - QUESTS AVAILABLE], [VENDOR], [TRAINER], [FLIGHT MASTER], [INNKEEPER], [BANKER], [AUCTIONEER]
+    - NEVER interact with generic friendly NPCs that have no useful tags - they are a waste of time
+    - If you see a friendly NPC with no useful tags, IGNORE IT completely and focus on combat or exploration
+    - If your last action was to interact with an NPC but you're still in the same position, that NPC was useless - find enemies to fight or new areas to explore
+
+    COMBAT TARGETING AND POSITIONING:
+    - ALWAYS select your target properly before attacking using the attack command
+    - If you're too far from your target, MOVE CLOSER first before trying to attack
+    - MELEE fighters must get within 5 yards of the target before attacking
+    - RANGED fighters should maintain 6-25 yard distance from targets
+    - If you're a MELEE fighter and the target is far away, use move_to command to get closer first
+    - If you're a RANGED fighter and too close (distance < 6), move away before attacking
+
     COMBAT RULES:
     - If you or a player in your group are under attack, IMMEDIATELY prioritize defense. Attack the enemy targeting you or your group, or escape if the enemy is much higher level.
     - During combat, do NOT disengage or move away unless your HP is low or the enemy is significantly stronger.
@@ -1035,10 +1098,12 @@ static std::string BuildBotPrompt(Player* bot)
     - If a Dead creature is tagged as Lootable, try to loot its body.
     - QUEST GIVER RULES: 
       * ONLY interact with NPCs tagged as "[QUEST GIVER - TURN IN READY]" or "[QUEST GIVER - QUESTS AVAILABLE]"
-      * NEVER interact with NPCs that have no quest tags or generic "[QUEST GIVER]" without specifics
+      * COMPLETELY IGNORE all other NPCs unless they have useful tags like [VENDOR], [TRAINER], [FLIGHT MASTER], [INNKEEPER], [BANKER], [AUCTIONEER]
+      * NEVER interact with NPCs that have no quest tags, no useful service tags, or are just generic friendly NPCs
       * If you see an NPC with no available quests, IMMEDIATELY move away and find a different target
       * If your last command was to interact with a quest giver but you're still at the same location, that means the NPC had no quests - MOVE ELSEWHERE IMMEDIATELY
       * Do NOT repeatedly try to interact with the same quest giver - if it didn't work the first time, that NPC has no available quests for you
+      * PRIORITIZE ENEMIES TO KILL over useless friendly NPCs - combat gives XP, talking to random NPCs does not
     - DO NOT STAND ON CAMP FIRES.
     
     NAVIGATION:

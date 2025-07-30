@@ -52,12 +52,19 @@ namespace BotBuddyAI
                 bot->GetName(), target->GetName(), guid.GetCounter());
         }
 
-        // First set the target in the AI context - this is critical for combat
+        // CRITICAL: Set selection and target properly FIRST
+        bot->SetSelection(guid);
+        bot->SetTarget(guid);
+        
+        // Set the target in the AI context - this is critical for combat
         ai->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(target);
         ai->GetAiObjectContext()->GetValue<ObjectGuid>("pull target")->Set(guid);
         
         // Change to combat engine to enable combat actions
         ai->ChangeEngine(BOT_STATE_COMBAT);
+        
+        // Face the target properly
+        bot->SetFacingToObject(target);
         
         // Determine if bot is melee or ranged for proper positioning
         bool isMelee = ai->IsMelee(bot);
@@ -77,25 +84,24 @@ namespace BotBuddyAI
                 meleeRange, spellRange, shootRange);
         }
         
-        // Handle positioning based on combat type
+        // Handle positioning and attacking based on combat type
         if (isMelee) {
-            // For melee bots, ensure they're in melee range
+            // For melee bots, ensure they're in melee range before attacking
             if (currentDistance > meleeRange) {
-                // Try to reach melee range first
-                result = ai->DoSpecificAction("reach melee", event);
+                // Move to melee range first
+                bot->GetMotionMaster()->Clear();
+                bot->GetMotionMaster()->MoveChase(target, 0.0f, 0.0f);
+                
                 if (g_EnableOllamaBotBuddyDebug) {
-                    LOG_INFO("server.loading", "[OllamaBotBuddy] Melee bot reaching target: {}", result ? "SUCCESS" : "FAILED");
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Melee bot moving to target, distance: {:.1f}", currentDistance);
                 }
-                // If reach melee fails, try manual movement
-                if (!result) {
-                    std::ostringstream coords;
-                    coords << target->GetPositionX() << ";" << target->GetPositionY() << ";" << target->GetPositionZ();
-                    Event moveEvent = Event("", coords.str());
-                    ai->DoSpecificAction("go", moveEvent);
-                }
+                
+                // Try reach melee action as well
+                result = ai->DoSpecificAction("reach melee", event);
+                return true; // Movement initiated, attack will happen next cycle
             }
             
-            // Now try melee attack - use proper playerbot actions
+            // In melee range - attack now
             if (ai->IsTank(bot)) {
                 result = ai->DoSpecificAction("tank assist", event);
             } else {
@@ -106,6 +112,13 @@ namespace BotBuddyAI
             if (!result) {
                 result = ai->DoSpecificAction("melee", event);
             }
+            
+            // Manual attack initiation if playerbot actions fail
+            if (!result) {
+                bot->Attack(target, true); // true = melee attack
+                result = true;
+            }
+            
         } else if (isRanged) {
             // For ranged bots, maintain appropriate distance
             float optimalRange = std::min(spellRange, shootRange);
@@ -113,26 +126,30 @@ namespace BotBuddyAI
             
             if (currentDistance < minRange) {
                 // Too close for ranged - back away
-                result = ai->DoSpecificAction("flee", event);
+                bot->GetMotionMaster()->Clear();
+                float angle = target->GetAngle(bot);
+                float destX = bot->GetPositionX() + cos(angle) * 12.0f;
+                float destY = bot->GetPositionY() + sin(angle) * 12.0f;
+                float destZ = bot->GetPositionZ();
+                bot->GetMotionMaster()->MovePoint(0, destX, destY, destZ);
+                
                 if (g_EnableOllamaBotBuddyDebug) {
-                    LOG_INFO("server.loading", "[OllamaBotBuddy] Ranged bot fleeing (too close): {}", result ? "SUCCESS" : "FAILED");
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Ranged bot backing away, distance: {:.1f}", currentDistance);
                 }
+                return true; // Movement initiated
+                
             } else if (currentDistance > optimalRange) {
                 // Too far - move closer to optimal range
-                result = ai->DoSpecificAction("reach spell", event);
+                bot->GetMotionMaster()->Clear();
+                bot->GetMotionMaster()->MoveChase(target, 0.0f, optimalRange * 0.7f);
+                
                 if (g_EnableOllamaBotBuddyDebug) {
-                    LOG_INFO("server.loading", "[OllamaBotBuddy] Ranged bot reaching range: {}", result ? "SUCCESS" : "FAILED");
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Ranged bot moving to optimal range, distance: {:.1f}", currentDistance);
                 }
-                // If reach spell fails, try manual movement
-                if (!result) {
-                    std::ostringstream coords;
-                    coords << target->GetPositionX() << ";" << target->GetPositionY() << ";" << target->GetPositionZ();
-                    Event moveEvent = Event("", coords.str());
-                    ai->DoSpecificAction("go", moveEvent);
-                }
+                return true; // Movement initiated
             }
             
-            // Now try ranged attack - use proper playerbot actions
+            // In good range - attack now
             if (ai->IsTank(bot)) {
                 result = ai->DoSpecificAction("tank assist", event);
             } else {
@@ -146,74 +163,34 @@ namespace BotBuddyAI
                     result = ai->DoSpecificAction("cast combat spell", event);
                 }
             }
+            
+            // Manual attack initiation if playerbot actions fail
+            if (!result) {
+                bot->Attack(target, false); // false = ranged attack
+                result = true;
+            }
+            
         } else {
-            // Hybrid or unknown type - try basic attack
-            result = ai->DoSpecificAction("attack my target", event);
+            // Hybrid or unknown type - use basic positioning and attack
+            if (currentDistance > ATTACK_DISTANCE) {
+                // Move closer
+                bot->GetMotionMaster()->Clear();
+                bot->GetMotionMaster()->MoveChase(target);
+                return true; // Movement initiated
+            }
+            
+            // Try basic attack actions
+            result = ai->DoSpecificAction("dps assist", event);
+            if (!result) {
+                bot->Attack(target, currentDistance <= ATTACK_DISTANCE);
+                result = true;
+            }
         }
         
         if (g_EnableOllamaBotBuddyDebug)
         {
             LOG_INFO("server.loading", "[OllamaBotBuddy] Combat type - Melee: {}, Ranged: {}, Distance: {:.1f}, Attack result: {}", 
                 isMelee ? "YES" : "NO", isRanged ? "YES" : "NO", currentDistance, result ? "SUCCESS" : "FAILED");
-        }
-        
-        // If primary attacks fail, try dps assist as fallback
-        if (!result) {
-            result = ai->DoSpecificAction("dps assist", event);
-            if (g_EnableOllamaBotBuddyDebug)
-            {
-                LOG_INFO("server.loading", "[OllamaBotBuddy] DPS assist action result: {}", result ? "SUCCESS" : "FAILED");
-            }
-        }
-        
-        // Final fallback - manually initiate attack using core combat mechanics
-        if (!result) {
-            // Set selection and start attack manually
-            bot->SetSelection(guid);
-            bot->SetFacingToObject(target);
-            
-            // Determine proper attack mode based on range and class
-            bool shouldMelee = (isMelee && bot->IsWithinMeleeRange(target)) || 
-                              (!isRanged && bot->IsWithinMeleeRange(target));
-            bot->Attack(target, shouldMelee);
-            
-            // Handle movement based on combat type and current distance
-            if (isMelee && currentDistance > ATTACK_DISTANCE) {
-                // Melee bots should chase target
-                bot->GetMotionMaster()->Clear();
-                bot->GetMotionMaster()->MoveChase(target);
-                if (g_EnableOllamaBotBuddyDebug) {
-                    LOG_INFO("server.loading", "[OllamaBotBuddy] Melee bot chasing target");
-                }
-            } else if (isRanged) {
-                float optimalRange = std::min(spellRange, shootRange);
-                if (currentDistance < 6.0f) {
-                    // Ranged bots should maintain distance - move away
-                    bot->GetMotionMaster()->Clear();
-                    float angle = target->GetAngle(bot);
-                    float destX = bot->GetPositionX() + cos(angle) * 10.0f;
-                    float destY = bot->GetPositionY() + sin(angle) * 10.0f;
-                    float destZ = bot->GetPositionZ();
-                    bot->GetMotionMaster()->MovePoint(0, destX, destY, destZ);
-                    if (g_EnableOllamaBotBuddyDebug) {
-                        LOG_INFO("server.loading", "[OllamaBotBuddy] Ranged bot backing away from target");
-                    }
-                } else if (currentDistance > optimalRange) {
-                    // Too far - move closer but maintain ranged distance
-                    bot->GetMotionMaster()->Clear();
-                    bot->GetMotionMaster()->MoveChase(target, 0.0f, optimalRange * 0.8f);
-                    if (g_EnableOllamaBotBuddyDebug) {
-                        LOG_INFO("server.loading", "[OllamaBotBuddy] Ranged bot moving to optimal range");
-                    }
-                }
-            }
-            
-            result = true;
-            
-            if (g_EnableOllamaBotBuddyDebug)
-            {
-                LOG_INFO("server.loading", "[OllamaBotBuddy] Manual attack initiation: SUCCESS (melee mode: {})", shouldMelee ? "YES" : "NO");
-            }
         }
         
         return result;
