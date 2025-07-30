@@ -956,9 +956,9 @@ std::string GetDetailedQuestInfo(Player* bot)
                         
                         oss << " - " << targetName << ": " << currentCount << "/" << requiredCount;
                         if (currentCount >= requiredCount) {
-                            oss << " ✓ COMPLETE";
+                            oss << " COMPLETE";
                         } else {
-                            oss << " ✗ NEED " << (requiredCount - currentCount) << " MORE";
+                            oss << " NEED " << (requiredCount - currentCount) << " MORE";
                         }
                         oss << "\n";
                     }
