@@ -208,7 +208,27 @@ bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
                 }
                 
                 if (!validTarget) {
-                    LOG_DEBUG("server.loading", "[OllamaBotBuddy] Invalid or unreachable attack target with guid: {}", targetGuid);
+                    LOG_ERROR("server.loading", "[OllamaBotBuddy] Invalid or unreachable attack target with guid: {} - Target not found in visible creatures/players", targetGuid);
+                    
+                    // Debug: List available creature GUIDs for debugging
+                    if (g_EnableOllamaBotBuddyDebug) {
+                        std::vector<uint32> availableGuids;
+                        for (auto const& pair : bot->GetMap()->GetCreatureBySpawnIdStore()) {
+                            Creature* c = pair.second;
+                            if (c && bot->IsWithinDistInMap(c, 100.0f)) {
+                                availableGuids.push_back(c->GetGUID().GetCounter());
+                            }
+                        }
+                        
+                        std::ostringstream guidList;
+                        for (size_t i = 0; i < availableGuids.size() && i < 10; ++i) {
+                            if (i > 0) guidList << ", ";
+                            guidList << availableGuids[i];
+                        }
+                        
+                        LOG_DEBUG("server.loading", "[OllamaBotBuddy] Available creature GUIDs: {}", guidList.str());
+                    }
+                    
                     return false;
                 }
                 
@@ -1447,6 +1467,10 @@ static std::string BuildBotPrompt(Player* bot)
     - If you have quests "READY TO TURN IN", find those quest givers immediately - this is your highest priority
     - For incomplete quests, target the specific creatures or objects needed for quest objectives rather than random enemies
     - CRITICAL: You can ONLY interact with, attack, or move to objects/creatures that are listed in your "Visible locations/objects" section - NEVER try to attack or interact with creatures/NPCs that aren't currently visible
+    - **GUID USAGE CRITICAL**: When using attack, interact, or spell commands, you MUST copy the exact GUID number from the visible locations list. DO NOT make up or guess GUID numbers!
+    - EXAMPLE: If you see "ENEMY: Kobold Vermin (guid: 604, Level: 1...)", use exactly 604 as the GUID in your attack command
+    - INVALID: Using made-up GUIDs like 1234, 5678, or any number not explicitly shown in your visible locations
+    - VALID: Only use GUIDs that appear in parentheses after "guid:" in your visible locations list
     - If quest objectives require specific creatures that are NOT in your visible list, you must move to find them - use waypoints or explore new areas
     - Always choose the most effective single action to level up, complete quests, gain gear, or respond to threats.
     - ANY other format or additional text reply is INVALID.
@@ -1504,6 +1528,8 @@ static std::string BuildBotPrompt(Player* bot)
     "reasoning" must be a short natural-language explanation for why you chose this command.
     "say" must be what your character would say in-game to players, or "" if nothing is to be said. You can use this to communicate with players, but do not use it for commands.
 
+    **CRITICAL GUID REQUIREMENT**: For attack, interact, and spell commands, you MUST use the exact GUID numbers from your visible locations list. DO NOT make up numbers!
+
     EXAMPLES:
     {
     "command": { "type": "move_to", "params": { "x": -9347.02, "y": 256.48, "z": 65.10 } },
@@ -1511,9 +1537,14 @@ static std::string BuildBotPrompt(Player* bot)
     "say": "On my way."
     }
     {
-    "command": { "type": "attack", "params": { "guid": 2241 } },
-    "reasoning": "Attacking the nearest enemy.",
-    "say": "Engaging the enemy."
+    "command": { "type": "attack", "params": { "guid": 604 } },
+    "reasoning": "Attacking Kobold Vermin with GUID 604 from my visible list for quest objective.",
+    "say": "Attacking the Kobold!"
+    }
+    {
+    "command": { "type": "interact", "params": { "guid": 617 } },
+    "reasoning": "Interacting with Kobold Worker GUID 617 from my visible list.",
+    "say": "Let me talk to this worker."
     }
     {
     "command": { "type": "loot", "params": { } },
