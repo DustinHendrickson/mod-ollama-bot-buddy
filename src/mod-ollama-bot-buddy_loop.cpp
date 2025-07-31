@@ -1417,18 +1417,18 @@ static std::string BuildBotPrompt(Player* bot)
 
     SURVIVAL AND IMMEDIATE THREATS (HIGHEST PRIORITY):
     - If you are taking damage and not in combat with a target, IMMEDIATELY move away from your current position
-    - If you see "ENEMY" creatures in your visible list and you're not fighting anything, ATTACK the nearest enemy immediately
+    - If you see ENEMY creatures in your visible list and you're not fighting anything, ATTACK the nearest enemy immediately
     - DO NOT STAND ON CAMP FIRES or other environmental hazards - they cause damage
     - If your HP is dropping and you're not in combat, move to a safe location immediately
     - If you're under attack by enemies, prioritize combat over everything else
 
     QUEST PRIORITIZATION (HIGH PRIORITY):
-    - If you have any quests marked "READY TO TURN IN", that is your TOP PRIORITY - find the quest giver immediately
+    - If you have any quests marked READY TO TURN IN, that is your TOP PRIORITY - find the quest giver immediately
     - For incomplete quests, read the objectives carefully and focus on completing them:
       * If you need to kill creatures, prioritize those specific creatures over random enemies
       * If you need to collect items, look for the sources of those items
       * If you need to interact with objects, find and use those objects
-      * If objectives show "COMPLETE", that part is done - focus on incomplete objectives
+      * If objectives show COMPLETE, that part is done - focus on incomplete objectives
     - When you see quest objectives that need specific creatures or items, prioritize those targets over random combat
     - Quest completion gives significant XP - completing quests is more efficient than random grinding
 
@@ -1484,8 +1484,8 @@ static std::string BuildBotPrompt(Player* bot)
 
     DECISION RULE (ABSOLUTE PRIORITY ORDER):
     1. SURVIVAL FIRST: If you're taking damage and not in combat, move away from environmental hazards immediately
-    2. QUEST TURN-INS (ABSOLUTE HIGHEST PRIORITY): If ANY quest shows "READY TO TURN IN" status, IMMEDIATELY find the quest giver with [QUEST GIVER - TURN IN READY] tag - this takes priority over ALL combat, looting, and other activities
-    3. LOOTING DEAD CREATURES (CRITICAL): If you see ANY creatures marked as "DEAD" or "DEAD (LOOTABLE)" in your visible list, use the loot command immediately - NEVER attack dead creatures, ALWAYS loot them for XP and items
+    2. QUEST TURN-INS (ABSOLUTE HIGHEST PRIORITY): If ANY quest shows READY TO TURN IN status, IMMEDIATELY find the quest giver with [QUEST GIVER - TURN IN READY] tag - this takes priority over ALL combat, looting, and other activities
+    3. LOOTING DEAD CREATURES (CRITICAL): If you see ANY creatures marked as DEAD or DEAD (LOOTABLE) in your visible list, use the loot command immediately - NEVER attack dead creatures, ALWAYS loot them for XP and items
     4. QUEST OBJECTIVES: For INCOMPLETE quests only, prioritize completing quest objectives over random combat - but ONLY attack LIVING creatures, never dead ones
     5. VISIBLE ENEMIES: If you see any LIVING ENEMY creatures in your visible list, attack them for XP - but ONLY if you have NO completed quests to turn in and NO dead creatures to loot
     - For incomplete quests, target the specific creatures or objects needed for quest objectives rather than random enemies
@@ -1557,7 +1557,7 @@ static std::string BuildBotPrompt(Player* bot)
     **CRITICAL GUID REQUIREMENT**: For attack, interact, and spell commands, you MUST use the exact GUID numbers from your visible locations list. DO NOT make up numbers!
 
     **ABSOLUTE RULE: DEAD CREATURES = LOOT ONLY, NEVER ATTACK!**
-    - If ANY creature has "DEAD" in its status description, use loot command ONLY
+    - If ANY creature has DEAD in its status description, use loot command ONLY
     - NEVER use attack command on dead creatures, even for quest objectives
     - Dead creatures give XP and items through looting, not attacking
 
