@@ -651,7 +651,6 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
         else type = "NEUTRAL";
 
         std::string questGiver = "";
-        bool isUsefulNPC = false;
         
         // Only consider NPCs that are actually useful to the bot
         if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER)) {
@@ -691,10 +690,8 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
             // Only show quest giver tags if there are actually relevant quests
             if (hasCompleteQuests) {
                 questGiver = " [QUEST GIVER - TURN IN READY]";
-                isUsefulNPC = true;
             } else if (hasAvailableQuests) {
                 questGiver = " [QUEST GIVER - QUESTS AVAILABLE]";
-                isUsefulNPC = true;
             }
         }
         
@@ -706,32 +703,26 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
             // Check for vendors
             if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_VENDOR)) {
                 npcTypes.push_back("[VENDOR]");
-                isUsefulNPC = true;
             }
             // Check for trainers
             if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_TRAINER)) {
                 npcTypes.push_back("[TRAINER]");
-                isUsefulNPC = true;
             }
             // Check for flight masters
             if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_FLIGHTMASTER)) {
                 npcTypes.push_back("[FLIGHT MASTER]");
-                isUsefulNPC = true;
             }
             // Check for innkeepers
             if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_INNKEEPER)) {
                 npcTypes.push_back("[INNKEEPER]");
-                isUsefulNPC = true;
             }
             // Check for bankers
             if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_BANKER)) {
                 npcTypes.push_back("[BANKER]");
-                isUsefulNPC = true;
             }
             // Check for auctioneers
             if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_AUCTIONEER)) {
                 npcTypes.push_back("[AUCTIONEER]");
-                isUsefulNPC = true;
             }
             
             // Combine quest giver status with other NPC types
@@ -750,11 +741,6 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
                     }
                 }
             }
-        }
-        
-        // If it's an enemy or dead lootable, always show it
-        if (type == "ENEMY" || type.find("DEAD (LOOTABLE)") != std::string::npos) {
-            isUsefulNPC = true;
         }
         
         // Show ALL creatures - don't filter out any visible creatures
@@ -1468,8 +1454,8 @@ static std::string BuildBotPrompt(Player* bot)
     - For incomplete quests, target the specific creatures or objects needed for quest objectives rather than random enemies
     - CRITICAL: You can ONLY interact with, attack, or move to objects/creatures that are listed in your "Visible locations/objects" section - NEVER try to attack or interact with creatures/NPCs that aren't currently visible
     - **GUID USAGE CRITICAL**: When using attack, interact, or spell commands, you MUST copy the exact GUID number from the visible locations list. DO NOT make up or guess GUID numbers!
-    - EXAMPLE: If you see "ENEMY: Kobold Vermin (guid: 604, Level: 1...)", use exactly 604 as the GUID in your attack command
-    - INVALID: Using made-up GUIDs like 1234, 5678, or any number not explicitly shown in your visible locations
+    - EXAMPLE: If you see "ENEMY: Kobold Vermin (guid: 604, Level: 1...)", use exactly 604 as the GUID in your attack command;
+    - INVALID: Using made-up GUIDs like 1234, 5678, or any number not explicitly shown in your visible locations;
     - VALID: Only use GUIDs that appear in parentheses after "guid:" in your visible locations list
     - If quest objectives require specific creatures that are NOT in your visible list, you must move to find them - use waypoints or explore new areas
     - Always choose the most effective single action to level up, complete quests, gain gear, or respond to threats.
