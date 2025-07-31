@@ -658,10 +658,9 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
             isUsefulNPC = true;
         }
         
-        // SKIP all NPCs that are not useful (no quests, not vendors, not enemies, etc.)
-        if (!isUsefulNPC) {
-            continue;
-        }
+        // Show ALL creatures - don't filter out any visible creatures
+        // The bot needs to see all potential targets, not just "useful" NPCs
+        // Enemies, neutrals, and friendlies should all be visible for decision making
 
         float dist = bot->GetDistance(c);
         visible.push_back(fmt::format(
@@ -875,7 +874,17 @@ std::string GetCombatSummary(Player* bot)
     }
     else
     {
-        oss << "NOT IN COMBAT (" << combatType << " FIGHTER). Your HP: " << (bot ? std::to_string(bot->GetHealth()) : "?") << "/" << (bot ? std::to_string(bot->GetMaxHealth()) : "?");
+        oss << "NOT IN COMBAT (" << combatType << " FIGHTER). ";
+        
+        // Check for health issues that might indicate environmental damage
+        if (bot) {
+            float healthPercent = (float)bot->GetHealth() / (float)bot->GetMaxHealth() * 100.0f;
+            if (healthPercent < 90.0f) {
+                oss << "WARNING: Your health is at " << (int)healthPercent << "% - you may be taking environmental damage! ";
+            }
+        }
+        
+        oss << "Your HP: " << (bot ? std::to_string(bot->GetHealth()) : "?") << "/" << (bot ? std::to_string(bot->GetMaxHealth()) : "?");
         oss << ", Mana: " << (bot ? std::to_string(bot->GetPower(POWER_MANA)) : "?") << "/" << (bot ? std::to_string(bot->GetMaxPower(POWER_MANA)) : "?");
         oss << ", Energy: " << (bot ? std::to_string(bot->GetPower(POWER_ENERGY)) : "?") << "/" << (bot ? std::to_string(bot->GetMaxPower(POWER_ENERGY)) : "?");
     }
@@ -1188,6 +1197,18 @@ static std::string BuildBotPrompt(Player* bot)
     if (!losLocs.empty()) {
         oss << "Visible locations/objects in line of sight:\n";
         for (const auto& entry : losLocs) oss << " - " << entry << "\n";
+        
+        // Check for enemies and add a warning
+        bool hasEnemies = false;
+        for (const auto& entry : losLocs) {
+            if (entry.find("ENEMY:") != std::string::npos) {
+                hasEnemies = true;
+                break;
+            }
+        }
+        if (hasEnemies) {
+            oss << "*** WARNING: ENEMIES ARE VISIBLE! You should attack them for XP and to defend yourself! ***\n";
+        }
     }
 
     if (!wps.empty()) {
@@ -1234,7 +1255,14 @@ static std::string BuildBotPrompt(Player* bot)
 
     Primary goal: Level to 80 and equip the best gear. Prioritize combat, questing and quest givers that have available quests, talking to other players and efficient progression. If no available quests or viable enemies are nearby, turn in quests, explore for new quests, dungeons, raids, professions, or gold opportunities.
 
-    QUEST PRIORITIZATION (HIGHEST PRIORITY):
+    SURVIVAL AND IMMEDIATE THREATS (HIGHEST PRIORITY):
+    - If you are taking damage and not in combat with a target, IMMEDIATELY move away from your current position
+    - If you see "ENEMY" creatures in your visible list and you're not fighting anything, ATTACK the nearest enemy immediately
+    - DO NOT STAND ON CAMP FIRES or other environmental hazards - they cause damage
+    - If your HP is dropping and you're not in combat, move to a safe location immediately
+    - If you're under attack by enemies, prioritize combat over everything else
+
+    QUEST PRIORITIZATION (HIGH PRIORITY):
     - If you have any quests marked "READY TO TURN IN", that is your TOP PRIORITY - find the quest giver immediately
     - For incomplete quests, read the objectives carefully and focus on completing them:
       * If you need to kill creatures, prioritize those specific creatures over random enemies
@@ -1290,7 +1318,9 @@ static std::string BuildBotPrompt(Player* bot)
     - COMBAT TYPE AWARENESS: Your combat summary shows if you're a MELEE, RANGED, or HYBRID fighter. Use this to determine proper positioning and tactics.
 
     DECISION RULE:
-    - QUEST OBJECTIVES ARE TOP PRIORITY: Always check your active quest details first and prioritize completing quest objectives
+    - SURVIVAL FIRST: If you're taking damage and not in combat, move away from environmental hazards immediately
+    - VISIBLE ENEMIES: If you see any "ENEMY" creatures in your visible list, attack them for XP - this is your primary combat activity
+    - QUEST OBJECTIVES ARE HIGH PRIORITY: Always check your active quest details and prioritize completing quest objectives
     - If you have quests "READY TO TURN IN", find those quest givers immediately - this is your highest priority
     - For incomplete quests, target the specific creatures or objects needed for quest objectives rather than random enemies
     - CRITICAL: You can ONLY interact with, attack, or move to objects/creatures that are listed in your "Visible locations/objects" section - NEVER try to attack or interact with creatures/NPCs that aren't currently visible
@@ -1315,7 +1345,7 @@ static std::string BuildBotPrompt(Player* bot)
       * Do NOT repeatedly try to interact with the same quest giver - if it didn't work the first time, that NPC has no available quests for you
       * PRIORITIZE ENEMIES TO KILL over useless friendly NPCs - combat gives XP, talking to random NPCs does not
       * IF YOUR LAST COMMAND WAS "move_to" TO A QUEST GIVER AND YOU'RE NOW CLOSE TO THEM, YOUR NEXT COMMAND SHOULD BE "interact"
-    - DO NOT STAND ON CAMP FIRES.
+    - CRITICAL ENVIRONMENTAL SAFETY: If you are taking damage from environmental sources (like standing on campfires), IMMEDIATELY move to safety before doing anything else
     
     NAVIGATION:
     - Use ONLY GUIDs or coordinates listed in visible objects or navigation options.
