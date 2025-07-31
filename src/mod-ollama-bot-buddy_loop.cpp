@@ -1542,9 +1542,9 @@ static std::string BuildBotPrompt(Player* bot)
       * Distance 5.0-15.0: Usually close enough for most actions, but may need positioning
       * Distance > 15.0: Too far - calculate coordinates to move closer
     - **COORDINATE CALCULATION METHODS**:
-      * TO MOVE TO TARGET: Use target's exact "Position: X Y Z" coordinates from visible list
+      * TO MOVE TO TARGET: Use target exact Position: X Y Z coordinates from visible list
       * TO MOVE CLOSER: Calculate coordinates between your position and target (move 70% of the way)
-      * TO EXPLORE: Use waypoint coordinates from "Node #X 'Name' (X, Y, Z)" format
+      * TO EXPLORE: Use waypoint coordinates from Node format (X, Y, Z)
       * TO ESCAPE DANGER: Calculate coordinates away from your current position (add/subtract 10-20 units)
       * TO POSITION FOR RANGED: Calculate coordinates 8-12 units away from target in any direction
     - **MOVEMENT CALCULATION EXAMPLES**:
