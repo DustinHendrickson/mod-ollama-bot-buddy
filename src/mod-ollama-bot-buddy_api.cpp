@@ -110,29 +110,12 @@ namespace BotBuddyAI
             }
         }
 
-        // Check if target is dead - if so, try to loot instead of attack
+        // Check if target is dead - if so, refuse to attack and suggest looting instead
         if (!target->IsAlive()) {
             if (g_EnableOllamaBotBuddyDebug) {
-                LOG_INFO("server.loading", "[OllamaBotBuddy] Target is dead: {} - attempting to loot instead of attack", target->GetName());
+                LOG_INFO("server.loading", "[OllamaBotBuddy] REFUSING to attack dead target: {} - it should be looted, not attacked", target->GetName());
             }
-            
-            // If target is a dead creature, try to loot it
-            if (Creature* creature = target->ToCreature()) {
-                // Check if creature is lootable
-                if (creature->HasFlag(UNIT_DYNAMIC_FLAGS, UNIT_DYNFLAG_LOOTABLE)) {
-                    if (g_EnableOllamaBotBuddyDebug) {
-                        LOG_INFO("server.loading", "[OllamaBotBuddy] Dead creature {} is lootable - initiating loot", creature->GetName());
-                    }
-                    
-                    // Use the Interact function to handle looting
-                    return BotBuddyAI::Interact(bot, guid);
-                } else {
-                    if (g_EnableOllamaBotBuddyDebug) {
-                        LOG_INFO("server.loading", "[OllamaBotBuddy] Dead creature {} is not lootable", creature->GetName());
-                    }
-                }
-            }
-            return false;
+            return false; // Explicitly refuse to attack dead creatures
         }
         
         // Check if target is GM

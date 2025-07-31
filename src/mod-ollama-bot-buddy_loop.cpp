@@ -826,18 +826,27 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
         ));
     }
 
-    // Sort visible objects to prioritize quest givers with relevant quests
+    // Sort visible objects to prioritize critical actions
     std::stable_sort(visible.begin(), visible.end(), [](const std::string& a, const std::string& b) {
-        // Priority order: TURN IN READY > QUESTS AVAILABLE > others
+        // Highest Priority: Quest turn-ins
         bool aTurnIn = a.find("TURN IN READY") != std::string::npos;
         bool bTurnIn = b.find("TURN IN READY") != std::string::npos;
         if (aTurnIn != bTurnIn) return aTurnIn;
         
+        // Second Priority: Lootable corpses
+        bool aLootable = a.find("DEAD (LOOTABLE)") != std::string::npos;
+        bool bLootable = b.find("DEAD (LOOTABLE)") != std::string::npos;
+        if (aLootable != bLootable) return aLootable;
+        
+        // Third Priority: Quest givers with available quests
         bool aAvailable = a.find("QUESTS AVAILABLE") != std::string::npos;
         bool bAvailable = b.find("QUESTS AVAILABLE") != std::string::npos;
         if (aAvailable != bAvailable) return aAvailable;
         
-        // Removed generic QUEST GIVER sorting since we only show relevant quest givers now
+        // Fourth Priority: Quest targets
+        bool aQuestTarget = a.find("QUEST TARGET") != std::string::npos;
+        bool bQuestTarget = b.find("QUEST TARGET") != std::string::npos;
+        if (aQuestTarget != bQuestTarget) return aQuestTarget;
         
         return false; // Keep original order for everything else
     });
@@ -1312,10 +1321,13 @@ static std::string BuildBotPrompt(Player* bot)
         oss << "Visible locations/objects in line of sight:\n";
         for (const auto& entry : losLocs) oss << " - " << entry << "\n";
         
-        // Check for enemies and add a warning
+        // Check for critical priorities and add warnings
         bool hasEnemies = false;
         bool hasNeutrals = false;
         bool hasQuestTargets = false;
+        bool hasQuestTurnIns = false;
+        bool hasLootableCorpses = false;
+        
         for (const auto& entry : losLocs) {
             if (entry.find("ENEMY:") != std::string::npos) {
                 hasEnemies = true;
@@ -1326,6 +1338,20 @@ static std::string BuildBotPrompt(Player* bot)
             if (entry.find("[QUEST TARGET") != std::string::npos) {
                 hasQuestTargets = true;
             }
+            if (entry.find("[QUEST GIVER - TURN IN READY]") != std::string::npos) {
+                hasQuestTurnIns = true;
+            }
+            if (entry.find("DEAD (LOOTABLE)") != std::string::npos) {
+                hasLootableCorpses = true;
+            }
+        }
+        
+        // Priority warnings in order of importance
+        if (hasQuestTurnIns) {
+            oss << "*** HIGHEST PRIORITY: QUEST TURN-INS AVAILABLE! Find NPCs marked with [QUEST GIVER - TURN IN READY] immediately! ***\n";
+        }
+        if (hasLootableCorpses) {
+            oss << "*** LOOTABLE CORPSES AVAILABLE! Use 'loot' command on creatures marked 'DEAD (LOOTABLE)' for XP and items! ***\n";
         }
         if (hasQuestTargets) {
             oss << "*** QUEST TARGETS AVAILABLE! Attack the creatures marked with [QUEST TARGET] to complete your objectives! ***\n";
@@ -1430,6 +1456,7 @@ static std::string BuildBotPrompt(Player* bot)
     - If no quest targets are available, attack any hostile creatures visible for XP while searching
 
     COMBAT RULES:
+    - NEVER ATTACK DEAD CREATURES: If a creature is marked as "DEAD" or "DEAD (LOOTABLE)", use the "loot" command instead of attack
     - If you or a player in your group are under attack, IMMEDIATELY prioritize defense. Attack the enemy targeting you or your group, or escape if the enemy is much higher level.
     - During combat, do NOT disengage or move away unless your HP is low or the enemy is significantly stronger.
     - POSITIONING IS CRITICAL: Read your combat summary carefully to understand your role:
@@ -1438,7 +1465,7 @@ static std::string BuildBotPrompt(Player* bot)
       * Pay attention to range indicators: "IN MELEE RANGE", "GOOD RANGED POSITION", etc.
     - When choosing a target, move toward them if not in range. Use 'attack' only once you're within proper combat distance.
     - If you're too close to your target (distance <= 0.15) then move away before attacking again.
-    - DO NOT TRY TO ATTACK OR DEFEND FROM CREATURES TAGGED AS DEAD.
+    - DO NOT TRY TO ATTACK OR DEFEND FROM CREATURES TAGGED AS DEAD - USE LOOT COMMAND INSTEAD.
     - BE AGGRESSIVE, killing things around your level grants you XP to level up. Attack monsters nearby to help level up.
     - QUEST CREATURES PRIORITY: Always attack creatures needed for your quest objectives, regardless of their faction (hostile, neutral, or friendly)
     - If no quest target creatures are visible, prioritize attacking hostile creatures for XP and safety
@@ -1446,11 +1473,12 @@ static std::string BuildBotPrompt(Player* bot)
     - Make sure you're using your spells, if you have the resource cost and the spell sounds like it would help in combat, use a spell command picking a logical target guid!
     - COMBAT TYPE AWARENESS: Your combat summary shows if you're a MELEE, RANGED, or HYBRID fighter. Use this to determine proper positioning and tactics.
 
-    DECISION RULE:
-    - SURVIVAL FIRST: If you're taking damage and not in combat, move away from environmental hazards immediately
-    - VISIBLE ENEMIES: If you see any "ENEMY" creatures in your visible list, attack them for XP - this is your primary combat activity
-    - QUEST OBJECTIVES ARE HIGH PRIORITY: Always check your active quest details and prioritize completing quest objectives
-    - If you have quests "READY TO TURN IN", find those quest givers immediately - this is your highest priority
+    DECISION RULE (ABSOLUTE PRIORITY ORDER):
+    1. SURVIVAL FIRST: If you're taking damage and not in combat, move away from environmental hazards immediately
+    2. QUEST TURN-INS (HIGHEST PRIORITY): If you have quests "READY TO TURN IN", find those quest givers immediately - this takes priority over EVERYTHING else
+    3. LOOTING DEAD CREATURES: If you see "DEAD (LOOTABLE)" creatures in your visible list, use the "loot" command immediately - this gives XP and items
+    4. QUEST OBJECTIVES: Always check your active quest details and prioritize completing quest objectives over random combat
+    5. VISIBLE ENEMIES: If you see any "ENEMY" creatures in your visible list, attack them for XP - but only after checking for quest turn-ins and loot
     - For incomplete quests, target the specific creatures or objects needed for quest objectives rather than random enemies
     - CRITICAL: You can ONLY interact with, attack, or move to objects/creatures that are listed in your "Visible locations/objects" section - NEVER try to attack or interact with creatures/NPCs that aren't currently visible
     - **GUID USAGE CRITICAL**: When using attack, interact, or spell commands, you MUST copy the exact GUID number from the visible locations list. DO NOT make up or guess GUID numbers!
@@ -1461,9 +1489,9 @@ static std::string BuildBotPrompt(Player* bot)
     - Always choose the most effective single action to level up, complete quests, gain gear, or respond to threats.
     - ANY other format or additional text reply is INVALID.
     - Base your decisions on the current game state, visible objects, group status, and your last 5 commands along with their reasoning. For example, if your previous command was to move and attack a target, and that target is still present and within range, your next action should likely be to execute an attack command.
-    - If a Dead creature is tagged as Lootable, try to loot its body.
+    - DEAD CREATURE LOOTING: If you see a creature marked as "DEAD (LOOTABLE)" in your visible list, ALWAYS use the "loot" command to loot its body for XP and items - NEVER try to attack dead creatures
     - QUEST TARGET LOGIC:
-      * First, check if the creatures you need for quest objectives are in your visible list - if yes, attack them
+      * First, check if the creatures you need for quest objectives are in your visible list - if yes, attack them (but only if they are ALIVE, not dead)
       * If quest target creatures are NOT visible, move to a waypoint or new area to search for them
       * If no quest targets are visible and no useful NPCs are available, attack any hostile creature in your visible list for XP
       * NEVER try to attack creatures that aren't in your current visible list - they don't exist in your current area
