@@ -1327,13 +1327,14 @@ static std::string BuildBotPrompt(Player* bot)
         bool hasQuestTargets = false;
         bool hasQuestTurnIns = false;
         bool hasLootableCorpses = false;
+        bool hasDeadCreatures = false;
         
         for (const auto& entry : losLocs) {
-            if (entry.find("ENEMY:") != std::string::npos) {
-                hasEnemies = true;
+            if (entry.find("ENEMY:") != std::string::npos && entry.find("DEAD") == std::string::npos) {
+                hasEnemies = true; // Only count living enemies
             }
-            if (entry.find("NEUTRAL:") != std::string::npos) {
-                hasNeutrals = true;
+            if (entry.find("NEUTRAL:") != std::string::npos && entry.find("DEAD") == std::string::npos) {
+                hasNeutrals = true; // Only count living neutrals
             }
             if (entry.find("[QUEST TARGET") != std::string::npos) {
                 hasQuestTargets = true;
@@ -1341,8 +1342,11 @@ static std::string BuildBotPrompt(Player* bot)
             if (entry.find("[QUEST GIVER - TURN IN READY]") != std::string::npos) {
                 hasQuestTurnIns = true;
             }
-            if (entry.find("DEAD (LOOTABLE)") != std::string::npos) {
-                hasLootableCorpses = true;
+            if (entry.find("DEAD") != std::string::npos) {
+                hasDeadCreatures = true;
+                if (entry.find("LOOTABLE") != std::string::npos) {
+                    hasLootableCorpses = true;
+                }
             }
         }
         
@@ -1351,16 +1355,19 @@ static std::string BuildBotPrompt(Player* bot)
             oss << "*** HIGHEST PRIORITY: QUEST TURN-INS AVAILABLE! Find NPCs marked with [QUEST GIVER - TURN IN READY] immediately! ***\n";
         }
         if (hasLootableCorpses) {
-            oss << "*** LOOTABLE CORPSES AVAILABLE! Use 'loot' command on creatures marked 'DEAD (LOOTABLE)' for XP and items! ***\n";
+            oss << "*** CRITICAL: DEAD CREATURES TO LOOT! Use 'loot' command on ALL creatures marked 'DEAD' or 'DEAD (LOOTABLE)' - NEVER attack dead creatures! ***\n";
         }
         if (hasQuestTargets) {
-            oss << "*** QUEST TARGETS AVAILABLE! Attack the creatures marked with [QUEST TARGET] to complete your objectives! ***\n";
+            oss << "*** QUEST TARGETS AVAILABLE! Attack ONLY the LIVING creatures marked with [QUEST TARGET] to complete your objectives! ***\n";
         }
         if (hasEnemies) {
-            oss << "*** WARNING: ENEMIES ARE VISIBLE! You should attack them for XP and to defend yourself! ***\n";
+            oss << "*** WARNING: LIVING ENEMIES ARE VISIBLE! You should attack LIVING enemies for XP and to defend yourself! ***\n";
         }
         if (hasNeutrals && !hasQuestTargets) {
-            oss << "*** NEUTRAL CREATURES VISIBLE: These may be needed for quest objectives! Check your quest targets and attack if needed! ***\n";
+            oss << "*** NEUTRAL CREATURES VISIBLE: These may be needed for quest objectives! Check if they are LIVING and attack if needed for quests! ***\n";
+        }
+        if (hasDeadCreatures) {
+            oss << "*** IMPORTANT: ANY DEAD CREATURES MUST BE LOOTED, NOT ATTACKED! Use loot command for all creatures with 'DEAD' status! ***\n";
         }
     }
 
@@ -1456,7 +1463,9 @@ static std::string BuildBotPrompt(Player* bot)
     - If no quest targets are available, attack any hostile creatures visible for XP while searching
 
     COMBAT RULES:
-    - NEVER ATTACK DEAD CREATURES: If a creature is marked as DEAD or DEAD (LOOTABLE), use the loot command instead of attack
+    - NEVER ATTACK DEAD CREATURES: If a creature is marked as DEAD or DEAD (LOOTABLE), use the loot command instead of attack - this is CRITICAL
+    - DEAD CREATURES = LOOT ONLY: Any creature with "DEAD" in its status should ONLY be looted, NEVER attacked
+    - QUEST TARGET PRIORITY: Even for quest objectives, if the required creature is DEAD, use loot command instead of attack command
     - If you or a player in your group are under attack, IMMEDIATELY prioritize defense. Attack the enemy targeting you or your group, or escape if the enemy is much higher level.
     - During combat, do NOT disengage or move away unless your HP is low or the enemy is significantly stronger.
     - POSITIONING IS CRITICAL: Read your combat summary carefully to understand your role:
@@ -1475,10 +1484,10 @@ static std::string BuildBotPrompt(Player* bot)
 
     DECISION RULE (ABSOLUTE PRIORITY ORDER):
     1. SURVIVAL FIRST: If you're taking damage and not in combat, move away from environmental hazards immediately
-    2. QUEST TURN-INS (HIGHEST PRIORITY): If you have quests READY TO TURN IN, find those quest givers immediately - this takes priority over EVERYTHING else
-    3. LOOTING DEAD CREATURES: If you see DEAD (LOOTABLE) creatures in your visible list, use the loot command immediately - this gives XP and items
-    4. QUEST OBJECTIVES: Always check your active quest details and prioritize completing quest objectives over random combat
-    5. VISIBLE ENEMIES: If you see any ENEMY creatures in your visible list, attack them for XP - but only after checking for quest turn-ins and loot
+    2. QUEST TURN-INS (ABSOLUTE HIGHEST PRIORITY): If ANY quest shows "READY TO TURN IN" status, IMMEDIATELY find the quest giver with [QUEST GIVER - TURN IN READY] tag - this takes priority over ALL combat, looting, and other activities
+    3. LOOTING DEAD CREATURES (CRITICAL): If you see ANY creatures marked as "DEAD" or "DEAD (LOOTABLE)" in your visible list, use the loot command immediately - NEVER attack dead creatures, ALWAYS loot them for XP and items
+    4. QUEST OBJECTIVES: For INCOMPLETE quests only, prioritize completing quest objectives over random combat - but ONLY attack LIVING creatures, never dead ones
+    5. VISIBLE ENEMIES: If you see any LIVING ENEMY creatures in your visible list, attack them for XP - but ONLY if you have NO completed quests to turn in and NO dead creatures to loot
     - For incomplete quests, target the specific creatures or objects needed for quest objectives rather than random enemies
     - CRITICAL: You can ONLY interact with, attack, or move to objects/creatures that are listed in your Visible locations/objects section - NEVER try to attack or interact with creatures/NPCs that aren't currently visible
     - **GUID USAGE CRITICAL**: When using attack, interact, or spell commands, you MUST copy the exact GUID number from the visible locations list. DO NOT make up or guess GUID numbers!
@@ -1491,10 +1500,13 @@ static std::string BuildBotPrompt(Player* bot)
     - Base your decisions on the current game state, visible objects, group status, and your last 5 commands along with their reasoning. For example, if your previous command was to move and attack a target, and that target is still present and within range, your next action should likely be to execute an attack command.
     - DEAD CREATURE LOOTING: If you see a creature marked as DEAD (LOOTABLE) in your visible list, ALWAYS use the loot command to loot its body for XP and items - NEVER try to attack dead creatures
     - QUEST TARGET LOGIC:
-      * First, check if the creatures you need for quest objectives are in your visible list - if yes, attack them (but only if they are ALIVE, not dead)
+      * CRITICAL: Check if creatures are ALIVE before attacking - NEVER attack dead creatures
+      * If a quest target creature is DEAD or DEAD (LOOTABLE), use loot command instead of attack
+      * First, check if the LIVING creatures you need for quest objectives are in your visible list - if yes, attack them
       * If quest target creatures are NOT visible, move to a waypoint or new area to search for them
-      * If no quest targets are visible and no useful NPCs are available, attack any hostile creature in your visible list for XP
+      * If no LIVING quest targets are visible and no useful NPCs are available, attack any LIVING hostile creature in your visible list for XP
       * NEVER try to attack creatures that aren't in your current visible list - they don't exist in your current area
+      * DEAD CREATURES ANYWHERE = LOOT ONLY, regardless of quest status
     - QUEST GIVER INTERACTION LOGIC: 
       * If you see an NPC within 15 yards with [QUEST GIVER - TURN IN READY] or [QUEST GIVER - QUESTS AVAILABLE] tags: USE INTERACT COMMAND immediately
       * If you see such an NPC beyond 15 yards: USE MOVE_TO COMMAND to get closer first
@@ -1543,6 +1555,11 @@ static std::string BuildBotPrompt(Player* bot)
     \"say\" must be what your character would say in-game to players, or empty string if nothing is to be said (WITH QUOTES).
 
     **CRITICAL GUID REQUIREMENT**: For attack, interact, and spell commands, you MUST use the exact GUID numbers from your visible locations list. DO NOT make up numbers!
+
+    **ABSOLUTE RULE: DEAD CREATURES = LOOT ONLY, NEVER ATTACK!**
+    - If ANY creature has "DEAD" in its status description, use loot command ONLY
+    - NEVER use attack command on dead creatures, even for quest objectives
+    - Dead creatures give XP and items through looting, not attacking
 
     EXAMPLES (USE EXACT JSON FORMAT WITH QUOTES):
     {
