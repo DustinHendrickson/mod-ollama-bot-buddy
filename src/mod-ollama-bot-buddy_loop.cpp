@@ -1240,7 +1240,7 @@ static std::string BuildBotPrompt(Player* bot)
       * If you need to kill creatures, prioritize those specific creatures over random enemies
       * If you need to collect items, look for the sources of those items
       * If you need to interact with objects, find and use those objects
-      * If objectives show "✓ COMPLETE", that part is done - focus on incomplete objectives
+      * If objectives show "COMPLETE", that part is done - focus on incomplete objectives
     - When you see quest objectives that need specific creatures or items, prioritize those targets over random combat
     - Quest completion gives significant XP - completing quests is more efficient than random grinding
 

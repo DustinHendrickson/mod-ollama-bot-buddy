@@ -68,7 +68,7 @@ namespace BotBuddyAI
 
         // Additional safety: check if target is in same group or guild
         if (Player* targetPlayer = target->ToPlayer()) {
-            if (bot->IsInSameGroupWith(targetPlayer) || bot->IsInSameGuildWith(targetPlayer)) {
+            if (bot->IsInSameGroupWith(targetPlayer) || (bot->GetGuildId() != 0 && bot->GetGuildId() == targetPlayer->GetGuildId())) {
                 if (g_EnableOllamaBotBuddyDebug) {
                     LOG_INFO("server.loading", "[OllamaBotBuddy] Refusing to attack group/guild member: {}", target->GetName());
                 }
