@@ -1475,8 +1475,8 @@ static std::string BuildBotPrompt(Player* bot)
 
     DECISION RULE (ABSOLUTE PRIORITY ORDER):
     1. SURVIVAL FIRST: If you're taking damage and not in combat, move away from environmental hazards immediately
-    2. QUEST TURN-INS (HIGHEST PRIORITY): If you have quests "READY TO TURN IN", find those quest givers immediately - this takes priority over EVERYTHING else
-    3. LOOTING DEAD CREATURES: If you see "DEAD (LOOTABLE)" creatures in your visible list, use the "loot" command immediately - this gives XP and items
+    2. QUEST TURN-INS (HIGHEST PRIORITY): If you have quests READY TO TURN IN, find those quest givers immediately - this takes priority over EVERYTHING else
+    3. LOOTING DEAD CREATURES: If you see DEAD (LOOTABLE) creatures in your visible list, use the loot command immediately - this gives XP and items
     4. QUEST OBJECTIVES: Always check your active quest details and prioritize completing quest objectives over random combat
     5. VISIBLE ENEMIES: If you see any ENEMY creatures in your visible list, attack them for XP - but only after checking for quest turn-ins and loot
     - For incomplete quests, target the specific creatures or objects needed for quest objectives rather than random enemies
