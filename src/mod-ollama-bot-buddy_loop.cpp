@@ -1384,6 +1384,13 @@ static std::string BuildBotPrompt(Player* bot)
 
     if (!losLocs.empty() || !wps.empty()) {
         oss << "You must select one of these locations or waypoints to move to, interact with, accept or turn in quests, attack, loot, or any other action or choose a new unexplored spot.\n";
+        oss << "COORDINATE CALCULATION RULES:\n";
+        oss << " - YOUR POSITION: Use your current Position coordinates as reference point for all calculations\n";
+        oss << " - TO MOVE TO TARGETS: Use their exact 'Position: X Y Z' coordinates OR calculate closer positions\n";
+        oss << " - TO MOVE CLOSER: Calculate coordinates 70% of the way between your position and target\n";
+        oss << " - TO EXPLORE: Use waypoint coordinates from navigation list OR calculate new exploration points\n";
+        oss << " - DISTANCE THRESHOLDS: <5.0=attack/interact directly, >15.0=move closer using calculated coordinates\n";
+        oss << " - COORDINATE MATH: You can add/subtract 5-20 units from any position to create tactical positioning\n";
         oss << "IMPORTANT: You can ONLY attack creatures/NPCs that are listed above in the visible locations. If your quest requires creatures that are NOT visible, you must move to find them using waypoints or exploration.\n";
     }
 
@@ -1403,6 +1410,7 @@ static std::string BuildBotPrompt(Player* bot)
             oss << "   Reasoning: " << reasoningHist[i] << "\n";
         }
         oss << "\nIMPORTANT: Look at your command history above! If you keep using move_to commands to the same location, switch to interact commands instead. If you keep trying to interact with the same NPC unsuccessfully, move away to find enemies or other NPCs.\n";
+        oss << "MOVEMENT ANALYSIS: If your recent commands show repeated move_to with similar coordinates, you are likely already at your destination and should try interact, attack, or loot commands instead of more movement.\n";
     }
 
     if (g_EnableOllamaBotBuddyDebug)
@@ -1496,6 +1504,12 @@ static std::string BuildBotPrompt(Player* bot)
     - VALID: Only use GUIDs that appear in parentheses after guid: in your visible locations list
     - If quest objectives require specific creatures that are NOT in your visible list, you must move to find them - use waypoints or explore new areas
     - Always choose the most effective single action to level up, complete quests, gain gear, or respond to threats.
+    - MOVEMENT LOGIC: Before using move_to, check your current position and the target's distance:
+      * Your current position is shown in "Position: X Y Z" in your bot state summary
+      * Target distances are shown in your visible objects list as "Distance: X.X"
+      * If Distance < 6.0, you're close enough to interact/attack - DON'T move closer
+      * If you keep moving to the same coordinates, you're probably already there - try interact/attack instead
+      * Look at your command history - if your last move_to didn't change your situation, try a different action
     - ANY other format or additional text reply is INVALID.
     - Base your decisions on the current game state, visible objects, group status, and your last 5 commands along with their reasoning. For example, if your previous command was to move and attack a target, and that target is still present and within range, your next action should likely be to execute an attack command.
     - DEAD CREATURE LOOTING: If you see a creature marked as DEAD (LOOTABLE) in your visible list, ALWAYS use the loot command to loot its body for XP and items - NEVER try to attack dead creatures
@@ -1520,10 +1534,29 @@ static std::string BuildBotPrompt(Player* bot)
       * IF YOUR LAST COMMAND WAS move_to TO A QUEST GIVER AND YOU'RE NOW CLOSE TO THEM, YOUR NEXT COMMAND SHOULD BE interact
     - CRITICAL ENVIRONMENTAL SAFETY: If you are taking damage from environmental sources (like standing on campfires), IMMEDIATELY move to safety before doing anything else
     
-    NAVIGATION:
-    - Use ONLY GUIDs or coordinates listed in visible objects or navigation options.
-    - NEVER make up IDs, GUIDs, or coordinates.
-    - If nothing useful is visible, choose a waypoint or unexplored coordinate and move there.
+    NAVIGATION AND COORDINATE CALCULATION:
+    - **SMART COORDINATE CALCULATION**: You can calculate new coordinates based on your position and visible objects!
+    - **YOUR CURRENT POSITION**: Always shown as "Position: X Y Z" in your bot state summary
+    - **DISTANCE-BASED MOVEMENT RULES**:
+      * Distance < 5.0: Close enough for melee attack/interact - DO NOT MOVE, use attack/interact command
+      * Distance 5.0-15.0: Usually close enough for most actions, but may need positioning
+      * Distance > 15.0: Too far - calculate coordinates to move closer
+    - **COORDINATE CALCULATION METHODS**:
+      * TO MOVE TO TARGET: Use target's exact "Position: X Y Z" coordinates from visible list
+      * TO MOVE CLOSER: Calculate coordinates between your position and target (move 70% of the way)
+      * TO EXPLORE: Use waypoint coordinates from "Node #X 'Name' (X, Y, Z)" format
+      * TO ESCAPE DANGER: Calculate coordinates away from your current position (add/subtract 10-20 units)
+      * TO POSITION FOR RANGED: Calculate coordinates 8-12 units away from target in any direction
+    - **MOVEMENT CALCULATION EXAMPLES**:
+      * Your Position: -8920.1 -140.2 82.1, Target Position: -8913.2 -133.5 81.7, Distance: 25.3
+      * To move closer: Calculate midpoint or 70% distance: X = -8920.1 + ((-8913.2 - -8920.1) * 0.7) = -8915.3
+      * Y = -140.2 + ((-133.5 - -140.2) * 0.7) = -135.5, Z = 82.1 + ((81.7 - 82.1) * 0.7) = 81.8
+      * Result: move_to x: -8915.3, y: -135.5, z: 81.8
+    - **POSITIONING LOGIC**:
+      * MELEE FIGHTERS: Move to target's exact position for close combat
+      * RANGED FIGHTERS: Move to position 8-12 units away from target (calculate offset from target position)
+      * ESCAPE/SAFETY: Move 15-20 units away from current position in safe direction
+    - **FORBIDDEN**: Never use completely random numbers like -1000, -200, -50 that have no relation to visible positions
     - If you're in a group, try to stay within 5-10 distance of another group member if you're not engaged in combat.
     - Do not move DIRECTLY on top of other players, creatures or objects, always maintain a distance to avoid collision issues.
 
@@ -1561,26 +1594,36 @@ static std::string BuildBotPrompt(Player* bot)
     - NEVER use attack command on dead creatures, even for quest objectives
     - Dead creatures give XP and items through looting, not attacking
 
-    EXAMPLES (USE EXACT JSON FORMAT WITH QUOTES):
+    EXAMPLES (USE EXACT JSON FORMAT WITH QUOTES AND CALCULATED COORDINATES):
     {
-    \"command\": { \"type\": \"move_to\", \"params\": { \"x\": -9347.02, \"y\": 256.48, \"z\": 65.10 } },
-    \"reasoning\": \"Moving to the quest NPC as ordered by the player.\",
-    \"say\": \"On my way.\"
+    \"command\": { \"type\": \"move_to\", \"params\": { \"x\": -8913.2, \"y\": -133.5, \"z\": 81.7 } },
+    \"reasoning\": \"Moving to Kobold Vermin's exact position -8913.2 -133.5 81.7 from visible list - distance 25.3 is too far to attack directly.\",
+    \"say\": \"Moving closer to attack that Kobold.\"
+    }
+    {
+    \"command\": { \"type\": \"move_to\", \"params\": { \"x\": -8915.3, \"y\": -135.5, \"z\": 81.8 } },
+    \"reasoning\": \"Calculating position 70% of the way to Kobold. My position: -8920.1 -140.2 82.1, Target: -8913.2 -133.5 81.7. Calculated: -8915.3 -135.5 81.8\",
+    \"say\": \"Moving strategically closer.\"
+    }
+    {
+    \"command\": { \"type\": \"move_to\", \"params\": { \"x\": -8905.2, \"y\": -125.5, \"z\": 81.7 } },
+    \"reasoning\": \"Positioning for ranged combat. Target at -8913.2 -133.5 81.7, calculating position 8 units away: -8905.2 -125.5 81.7\",
+    \"say\": \"Getting into ranged position.\"
+    }
+    {
+    \"command\": { \"type\": \"move_to\", \"params\": { \"x\": -8935.1, \"y\": -155.2, \"z\": 82.1 } },
+    \"reasoning\": \"Escaping danger by moving 15 units away from my current position -8920.1 -140.2 82.1 to safety at -8935.1 -155.2 82.1\",
+    \"say\": \"Moving to safety!\"
     }
     {
     \"command\": { \"type\": \"attack\", \"params\": { \"guid\": 604 } },
-    \"reasoning\": \"Attacking Kobold Vermin with GUID 604 from my visible list for quest objective.\",
+    \"reasoning\": \"Attacking Kobold Vermin GUID 604 - distance 4.2 is close enough for melee combat.\",
     \"say\": \"Attacking the Kobold!\"
     }
     {
-    \"command\": { \"type\": \"interact\", \"params\": { \"guid\": 617 } },
-    \"reasoning\": \"Interacting with Kobold Worker GUID 617 from my visible list.\",
-    \"say\": \"Let me talk to this worker.\"
-    }
-    {
-    \"command\": { \"type\": \"loot\", \"params\": { } },
-    \"reasoning\": \"Looting the corpse.\",
-    \"say\": \"Looting now.\"
+    \"command\": { \"type\": \"move_to\", \"params\": { \"x\": -9123.4, \"y\": 267.8, \"z\": 73.2 } },
+    \"reasoning\": \"Moving to waypoint Node #5 coordinates -9123.4 267.8 73.2 to explore for new quest targets.\",
+    \"say\": \"Exploring a new area.\"
     }
 
     REMEMBER: NEVER REPLY WITH ANYTHING OTHER THAN A PROPERLY FORMATTED JSON OBJECT WITH QUOTES AROUND ALL STRINGS!!!
