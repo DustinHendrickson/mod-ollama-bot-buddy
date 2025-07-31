@@ -1520,53 +1520,53 @@ static std::string BuildBotPrompt(Player* bot)
     - To make your character say something to players, put the message as a string in the top-level say field.
     - Make yourself seem as human as possible, ask players for help if you don't understand something or need help finding something or killing something or completing a quest. Ask a nearby real player and use their response in your reasoning.
 
-    CRITICALLY IMPORTANT: Reply with EXACTLY and ONLY a single valid JSON object, no extra text, no comments, no code block formatting. Your JSON must be:
+    CRITICALLY IMPORTANT: Reply with EXACTLY and ONLY a single valid JSON object, no extra text, no comments, no code block formatting. Your JSON must be properly formatted with quotes around all strings:
     {
-    "command": { "type": <string>, "params": { ... } },
-    "reasoning": <string>,
-    "say": <string>
+    \"command\": { \"type\": <string>, \"params\": { ... } },
+    \"reasoning\": <string>,
+    \"say\": <string>
     }
 
-    Allowed type values and required params:
+    Allowed type values and required params (ALL STRINGS MUST HAVE QUOTES):
 
-    - move_to: params = { x: float, y: float, z: float }
-    - attack: params = { guid: int }
-    - interact: params = { guid: int }
-    - spell: params = { spellid: int, guid: int (omit if self-cast) }
-    - loot: params = { }
-    - accept_quest: params = { id: int }
-    - turn_in_quest: params = { id: int }
-    - follow: params = { }
-    - stop: params = { }
+    - \"move_to\": params = { \"x\": float, \"y\": float, \"z\": float }
+    - \"attack\": params = { \"guid\": int }
+    - \"interact\": params = { \"guid\": int }
+    - \"spell\": params = { \"spellid\": int, \"guid\": int (omit if self-cast) }
+    - \"loot\": params = { }
+    - \"accept_quest\": params = { \"id\": int }
+    - \"turn_in_quest\": params = { \"id\": int }
+    - \"follow\": params = { }
+    - \"stop\": params = { }
 
-    reasoning must be a short natural-language explanation for why you chose this command.
-    say must be what your character would say in-game to players, or empty string if nothing is to be said. You can use this to communicate with players, but do not use it for commands.
+    \"reasoning\" must be a short natural-language explanation for why you chose this command (WITH QUOTES).
+    \"say\" must be what your character would say in-game to players, or empty string if nothing is to be said (WITH QUOTES).
 
     **CRITICAL GUID REQUIREMENT**: For attack, interact, and spell commands, you MUST use the exact GUID numbers from your visible locations list. DO NOT make up numbers!
 
-    EXAMPLES:
+    EXAMPLES (USE EXACT JSON FORMAT WITH QUOTES):
     {
-    command: { type: move_to, params: { x: -9347.02, y: 256.48, z: 65.10 } },
-    reasoning: Moving to the quest NPC as ordered by the player.,
-    say: On my way.
+    \"command\": { \"type\": \"move_to\", \"params\": { \"x\": -9347.02, \"y\": 256.48, \"z\": 65.10 } },
+    \"reasoning\": \"Moving to the quest NPC as ordered by the player.\",
+    \"say\": \"On my way.\"
     }
     {
-    command: { type: attack, params: { guid: 604 } },
-    reasoning: Attacking Kobold Vermin with GUID 604 from my visible list for quest objective.,
-    say: Attacking the Kobold!
+    \"command\": { \"type\": \"attack\", \"params\": { \"guid\": 604 } },
+    \"reasoning\": \"Attacking Kobold Vermin with GUID 604 from my visible list for quest objective.\",
+    \"say\": \"Attacking the Kobold!\"
     }
     {
-    command: { type: interact, params: { guid: 617 } },
-    reasoning: Interacting with Kobold Worker GUID 617 from my visible list.,
-    say: Let me talk to this worker.
+    \"command\": { \"type\": \"interact\", \"params\": { \"guid\": 617 } },
+    \"reasoning\": \"Interacting with Kobold Worker GUID 617 from my visible list.\",
+    \"say\": \"Let me talk to this worker.\"
     }
     {
-    command: { type: loot, params: { } },
-    reasoning: Looting the corpse.,
-    say: Looting now.
+    \"command\": { \"type\": \"loot\", \"params\": { } },
+    \"reasoning\": \"Looting the corpse.\",
+    \"say\": \"Looting now.\"
     }
 
-    REMEMBER: NEVER REPLY WITH ANYTHING OTHER THAN A VALID JSON OBJECT!!!
+    REMEMBER: NEVER REPLY WITH ANYTHING OTHER THAN A PROPERLY FORMATTED JSON OBJECT WITH QUOTES AROUND ALL STRINGS!!!
     )";
 
 
