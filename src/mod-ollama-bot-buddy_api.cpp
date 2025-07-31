@@ -19,6 +19,10 @@
 #include "GossipDef.h"
 #include <sstream>
 
+// Constants for interaction and combat ranges
+#define INTERACTION_DISTANCE 5.5f
+#define ATTACK_DISTANCE 5.0f
+
 namespace BotBuddyAI
 {
     bool MoveTo(Player* bot, float x, float y, float z)
@@ -47,7 +51,7 @@ namespace BotBuddyAI
         if (!target || !bot->IsWithinLOSInMap(target)) return false;
 
         // CRITICAL: Validate target before attacking to prevent friendly fire
-        if (!ai->IsValidAttackTarget(target, bot)) {
+        if (!bot->IsValidAttackTarget(target)) {
             if (g_EnableOllamaBotBuddyDebug) {
                 LOG_INFO("server.loading", "[OllamaBotBuddy] Invalid attack target: {} - not attackable", target->GetName());
             }
@@ -124,7 +128,7 @@ namespace BotBuddyAI
             if (currentDistance > meleeRange) {
                 // Move to melee range first
                 bot->GetMotionMaster()->Clear();
-                bot->GetMotionMaster()->MoveChase(target, 0.0f, 0.0f);
+                bot->GetMotionMaster()->MoveChase(target);
                 
                 if (g_EnableOllamaBotBuddyDebug) {
                     LOG_INFO("server.loading", "[OllamaBotBuddy] Melee bot moving to target, distance: {:.1f}", currentDistance);
@@ -175,7 +179,7 @@ namespace BotBuddyAI
             } else if (currentDistance > optimalRange) {
                 // Too far - move closer to optimal range
                 bot->GetMotionMaster()->Clear();
-                bot->GetMotionMaster()->MoveChase(target, 0.0f, optimalRange * 0.7f);
+                bot->GetMotionMaster()->MoveChase(target, optimalRange * 0.7f);
                 
                 if (g_EnableOllamaBotBuddyDebug) {
                     LOG_INFO("server.loading", "[OllamaBotBuddy] Ranged bot moving to optimal range, distance: {:.1f}", currentDistance);

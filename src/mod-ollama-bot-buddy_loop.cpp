@@ -580,7 +580,8 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
                 {
                     uint32 questId = itr->second;
                     Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-                    if (quest && bot->CanTakeQuest(quest, false))
+                    if (quest && bot->GetQuestStatus(questId) == QUEST_STATUS_NONE && 
+                        bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false))
                     {
                         hasAvailableQuests = true;
                         break;
