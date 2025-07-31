@@ -77,7 +77,12 @@ namespace BotBuddyAI
         if (!ai) return false;
 
         Unit* target = ObjectAccessor::GetUnit(*bot, guid);
-        if (!target || !bot->IsWithinLOSInMap(target)) return false;
+        if (!target || !bot->IsWithinLOSInMap(target)) {
+            if (g_EnableOllamaBotBuddyDebug) {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Target not found or not in LOS for guid: {}", guid.GetCounter());
+            }
+            return false;
+        }
 
         // CRITICAL: Validate target before attacking to prevent friendly fire
         if (!bot->IsValidAttackTarget(target)) {
@@ -105,10 +110,35 @@ namespace BotBuddyAI
             }
         }
 
-        // Check if target is dead or GM
-        if (!target->IsAlive() || (target->ToPlayer() && target->ToPlayer()->IsGameMaster())) {
+        // Check if target is dead - if so, try to loot instead of attack
+        if (!target->IsAlive()) {
             if (g_EnableOllamaBotBuddyDebug) {
-                LOG_INFO("server.loading", "[OllamaBotBuddy] Target is dead or GM: {}", target->GetName());
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Target is dead: {} - attempting to loot instead of attack", target->GetName());
+            }
+            
+            // If target is a dead creature, try to loot it
+            if (Creature* creature = target->ToCreature()) {
+                // Check if creature is lootable
+                if (creature->HasFlag(UNIT_DYNAMIC_FLAGS, UNIT_DYNFLAG_LOOTABLE)) {
+                    if (g_EnableOllamaBotBuddyDebug) {
+                        LOG_INFO("server.loading", "[OllamaBotBuddy] Dead creature {} is lootable - initiating loot", creature->GetName());
+                    }
+                    
+                    // Use the Interact function to handle looting
+                    return BotBuddyAI::Interact(bot, guid);
+                } else {
+                    if (g_EnableOllamaBotBuddyDebug) {
+                        LOG_INFO("server.loading", "[OllamaBotBuddy] Dead creature {} is not lootable", creature->GetName());
+                    }
+                }
+            }
+            return false;
+        }
+        
+        // Check if target is GM
+        if (target->ToPlayer() && target->ToPlayer()->IsGameMaster()) {
+            if (g_EnableOllamaBotBuddyDebug) {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Target is GM: {}", target->GetName());
             }
             return false;
         }
@@ -119,148 +149,88 @@ namespace BotBuddyAI
                 bot->GetName(), target->GetName(), guid.GetCounter());
         }
 
-        // CRITICAL: Set selection and target properly FIRST
+        // Calculate ranges properly using AzerothCore standards
+        float currentDistance = bot->GetExactDist2d(target);
+        float meleeRange = bot->GetMeleeRange(target); // This includes combat reach calculation
+        float combatReach = bot->GetCombatReach() + target->GetCombatReach();
+        
+        if (g_EnableOllamaBotBuddyDebug) {
+            LOG_INFO("server.loading", "[OllamaBotBuddy] Combat distances - Current: {:.2f}, Melee: {:.2f}, CombatReach: {:.2f}", 
+                currentDistance, meleeRange, combatReach);
+        }
+
+        // Set target in AI context immediately for proper behavior
+        ai->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(target);
+        ai->GetAiObjectContext()->GetValue<ObjectGuid>("pull target")->Set(guid);
+        
+        // Set selection and target properly
         bot->SetSelection(guid);
         bot->SetTarget(guid);
         
-        // Set the target in the AI context - this is critical for combat
-        ai->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(target);
-        ai->GetAiObjectContext()->GetValue<ObjectGuid>("pull target")->Set(guid);
+        // Face the target if in combat or close
+        if (bot->IsInCombat() || currentDistance <= meleeRange + 5.0f) {
+            bot->SetFacingToObject(target);
+        }
+        
+        // Check if we need to move closer for melee combat
+        if (currentDistance > meleeRange) {
+            if (g_EnableOllamaBotBuddyDebug) {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Moving to melee range - distance {:.2f} > meleeRange {:.2f}", 
+                    currentDistance, meleeRange);
+            }
+            
+            // Clear any existing movement and start chasing
+            bot->GetMotionMaster()->Clear();
+            
+            // Use MoveChase with proper melee range - this should get the bot close enough to attack
+            bot->GetMotionMaster()->MoveChase(target, 0.0f); // 0.0f means use default melee range
+            
+            // Change to combat engine to enable combat actions
+            ai->ChangeEngine(BOT_STATE_COMBAT);
+            
+            // Also use playerbot AI movement action as backup
+            Event moveEvent = Event("", "");
+            ai->DoSpecificAction("reach melee", moveEvent);
+            
+            return true; // Movement initiated, attack will happen when in range
+        }
+        
+        // We're in melee range - initiate combat
+        if (g_EnableOllamaBotBuddyDebug) {
+            LOG_INFO("server.loading", "[OllamaBotBuddy] In melee range, starting combat");
+        }
         
         // Change to combat engine to enable combat actions
         ai->ChangeEngine(BOT_STATE_COMBAT);
         
-        // Face the target properly
+        // Face the target before attacking
         bot->SetFacingToObject(target);
         
-        // Determine if bot is melee or ranged for proper positioning
-        bool isMelee = ai->IsMelee(bot);
-        bool isRanged = ai->IsRanged(bot);
-        float currentDistance = bot->GetDistance(target);
-        float meleeRange = ai->GetRange("melee");
-        float spellRange = ai->GetRange("spell");
-        float shootRange = ai->GetRange("shoot");
+        // Start auto-attack
+        bot->Attack(target, true);
         
+        // Use playerbot AI actions for better combat behavior
         Event event = Event("", "");
         bool result = false;
         
-        if (g_EnableOllamaBotBuddyDebug) {
-            LOG_INFO("server.loading", "[OllamaBotBuddy] Combat analysis - Melee: {}, Ranged: {}, Distance: {:.1f}", 
-                isMelee ? "YES" : "NO", isRanged ? "YES" : "NO", currentDistance);
-            LOG_INFO("server.loading", "[OllamaBotBuddy] Ranges - Melee: {:.1f}, Spell: {:.1f}, Shoot: {:.1f}", 
-                meleeRange, spellRange, shootRange);
-        }
-        
-        // Handle positioning and attacking based on combat type
-        if (isMelee) {
-            // For melee bots, ensure they're in melee range before attacking
-            if (currentDistance > meleeRange) {
-                // Move to melee range first
-                bot->GetMotionMaster()->Clear();
-                bot->GetMotionMaster()->MoveChase(target);
-                
-                if (g_EnableOllamaBotBuddyDebug) {
-                    LOG_INFO("server.loading", "[OllamaBotBuddy] Melee bot moving to target, distance: {:.1f}", currentDistance);
-                }
-                
-                // Try reach melee action as well
-                result = ai->DoSpecificAction("reach melee", event);
-                return true; // Movement initiated, attack will happen next cycle
-            }
-            
-            // In melee range - attack now
-            if (ai->IsTank(bot)) {
-                result = ai->DoSpecificAction("tank assist", event);
-            } else {
-                result = ai->DoSpecificAction("dps assist", event);
-            }
-            
-            // Fallback to melee action if assist actions fail
-            if (!result) {
-                result = ai->DoSpecificAction("melee", event);
-            }
-            
-            // Manual attack initiation if playerbot actions fail
-            if (!result) {
-                bot->Attack(target, true); // true = melee attack
-                result = true;
-            }
-            
-        } else if (isRanged) {
-            // For ranged bots, maintain appropriate distance
-            float optimalRange = std::min(spellRange, shootRange);
-            float minRange = 6.0f; // Minimum range for ranged combat
-            
-            if (currentDistance < minRange) {
-                // Too close for ranged - back away
-                bot->GetMotionMaster()->Clear();
-                float angle = target->GetAngle(bot);
-                float destX = bot->GetPositionX() + cos(angle) * 12.0f;
-                float destY = bot->GetPositionY() + sin(angle) * 12.0f;
-                float destZ = bot->GetPositionZ();
-                bot->GetMotionMaster()->MovePoint(0, destX, destY, destZ);
-                
-                if (g_EnableOllamaBotBuddyDebug) {
-                    LOG_INFO("server.loading", "[OllamaBotBuddy] Ranged bot backing away, distance: {:.1f}", currentDistance);
-                }
-                return true; // Movement initiated
-                
-            } else if (currentDistance > optimalRange) {
-                // Too far - move closer to optimal range
-                bot->GetMotionMaster()->Clear();
-                bot->GetMotionMaster()->MoveChase(target, optimalRange * 0.7f);
-                
-                if (g_EnableOllamaBotBuddyDebug) {
-                    LOG_INFO("server.loading", "[OllamaBotBuddy] Ranged bot moving to optimal range, distance: {:.1f}", currentDistance);
-                }
-                return true; // Movement initiated
-            }
-            
-            // In good range - attack now
-            if (ai->IsTank(bot)) {
-                result = ai->DoSpecificAction("tank assist", event);
-            } else {
-                result = ai->DoSpecificAction("dps assist", event);
-            }
-            
-            // Fallback to specific ranged actions if assist fails
-            if (!result) {
-                result = ai->DoSpecificAction("shoot", event);
-                if (!result) {
-                    result = ai->DoSpecificAction("cast combat spell", event);
-                }
-            }
-            
-            // Manual attack initiation if playerbot actions fail
-            if (!result) {
-                bot->Attack(target, false); // false = ranged attack
-                result = true;
-            }
-            
+        // Try playerbot combat actions in order of preference
+        if (ai->IsTank(bot)) {
+            result = ai->DoSpecificAction("tank assist", event);
         } else {
-            // Hybrid or unknown type - use basic positioning and attack
-            if (currentDistance > ATTACK_DISTANCE) {
-                // Move closer
-                bot->GetMotionMaster()->Clear();
-                bot->GetMotionMaster()->MoveChase(target);
-                return true; // Movement initiated
-            }
-            
-            // Try basic attack actions
             result = ai->DoSpecificAction("dps assist", event);
-            if (!result) {
-                bot->Attack(target, currentDistance <= ATTACK_DISTANCE);
-                result = true;
-            }
         }
         
-        if (g_EnableOllamaBotBuddyDebug)
-        {
-            LOG_INFO("server.loading", "[OllamaBotBuddy] Combat type - Melee: {}, Ranged: {}, Distance: {:.1f}, Attack result: {}", 
-                isMelee ? "YES" : "NO", isRanged ? "YES" : "NO", currentDistance, result ? "SUCCESS" : "FAILED");
+        // Fallback to melee action if assist actions fail
+        if (!result) {
+            result = ai->DoSpecificAction("melee", event);
         }
         
-        return result;
+        if (g_EnableOllamaBotBuddyDebug) {
+            LOG_INFO("server.loading", "[OllamaBotBuddy] Combat initiated, playerbot action result: {}", 
+                result ? "SUCCESS" : "FALLBACK_TO_MANUAL");
+        }
+        
+        return true;
     }
 
     bool Interact(Player* bot, ObjectGuid guid)
