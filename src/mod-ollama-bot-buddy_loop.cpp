@@ -124,18 +124,36 @@ bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
                 float destY = params["y"].get<float>();
                 float destZ = params["z"].get<float>();
                 
+                // Basic coordinate validation - reject obviously invalid coordinates
+                if (std::isnan(destX) || std::isnan(destY) || std::isnan(destZ) || 
+                    std::isinf(destX) || std::isinf(destY) || std::isinf(destZ)) {
+                    LOG_DEBUG("server.loading", "[OllamaBotBuddy] Invalid coordinates for move_to: ({}, {}, {})", 
+                             destX, destY, destZ);
+                    return false;
+                }
+                
+                // Validate map bounds - reject coordinates that are extremely far from bot
+                float maxDistanceFromBot = 500.0f; // Maximum reasonable movement distance
+                float distanceFromBot = sqrt(pow(destX - bot->GetPositionX(), 2) + 
+                                           pow(destY - bot->GetPositionY(), 2) + 
+                                           pow(destZ - bot->GetPositionZ(), 2));
+                
+                if (distanceFromBot > maxDistanceFromBot) {
+                    LOG_DEBUG("server.loading", "[OllamaBotBuddy] Move_to destination too far from bot: ({}, {}, {}) - Distance: {:.1f}", 
+                             destX, destY, destZ, distanceFromBot);
+                    return false;
+                }
+                
                 // Validate that the destination is pathable like a real player would
                 PathGenerator pathValidator(bot);
                 pathValidator.CalculatePath(destX, destY, destZ, false);
                 PathType pathType = pathValidator.GetPathType();
                 
-                // Allow normal paths, incomplete paths (partial), and shortcuts as valid
-                uint32 validPathTypes = PATHFIND_NORMAL | PATHFIND_INCOMPLETE | PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH;
-                
-                if (!(pathType & validPathTypes) || (pathType & PATHFIND_NOPATH)) {
-                    LOG_DEBUG("server.loading", "[OllamaBotBuddy] Invalid destination for move_to: ({}, {}, {}) - PathType: {}", 
+                // Only reject if there's absolutely no path possible
+                if (pathType & PATHFIND_NOPATH) {
+                    LOG_DEBUG("server.loading", "[OllamaBotBuddy] No valid path for move_to: ({}, {}, {}) - PathType: {}", 
                              destX, destY, destZ, pathType);
-                    return false; // Reject invalid movement destinations
+                    return false; // Only reject if completely impossible to path
                 }
                 
                 command.type = BotControlCommandType::MoveTo;
@@ -152,8 +170,50 @@ bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
         else if (type == "attack")
         {
             if (params.contains("guid")) {
+                uint32_t targetGuid = params["guid"].get<uint32_t>();
+                
+                // Validate that the target exists and is attackable
+                bool validTarget = false;
+                
+                // Check if it's a creature
+                for (auto const& pair : bot->GetMap()->GetCreatureBySpawnIdStore())
+                {
+                    Creature* c = pair.second;
+                    if (c && c->GetGUID().GetCounter() == targetGuid)
+                    {
+                        // Validate target is attackable
+                        if (c->IsInWorld() && !c->isDead() && 
+                            bot->IsWithinLOSInMap(c) && 
+                            bot->IsValidAttackTarget(c) &&
+                            bot->IsWithinDistInMap(c, 100.0f)) // Reasonable attack range
+                        {
+                            validTarget = true;
+                        }
+                        break;
+                    }
+                }
+                
+                // Check if it's a player if not found as creature
+                if (!validTarget)
+                {
+                    ObjectGuid guid = ObjectGuid::Create<HighGuid::Player>(targetGuid);
+                    Player* playerTarget = ObjectAccessor::FindConnectedPlayer(guid);
+                    if (playerTarget && playerTarget->IsInWorld() && 
+                        bot->IsWithinLOSInMap(playerTarget) && 
+                        bot->IsValidAttackTarget(playerTarget) &&
+                        bot->IsWithinDistInMap(playerTarget, 100.0f))
+                    {
+                        validTarget = true;
+                    }
+                }
+                
+                if (!validTarget) {
+                    LOG_DEBUG("server.loading", "[OllamaBotBuddy] Invalid or unreachable attack target with guid: {}", targetGuid);
+                    return false;
+                }
+                
                 command.type = BotControlCommandType::Attack;
-                command.args = { std::to_string(params["guid"].get<uint32_t>()) };
+                command.args = { std::to_string(targetGuid) };
             } else {
                 LOG_ERROR("server.loading", "[OllamaBotBuddy] attack missing guid");
                 return false;
@@ -681,12 +741,41 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
         // The bot needs to see all potential targets, not just "useful" NPCs
         // Enemies, neutrals, and friendlies should all be visible for decision making
 
+        // Check if this creature is needed for any active quest objectives
+        std::string questTarget = "";
+        for (auto const& qs : bot->getQuestStatusMap())
+        {
+            uint32 questId = qs.first;
+            QuestStatus status = qs.second.Status;
+            
+            // Only check active quests
+            if (status != QUEST_STATUS_INCOMPLETE) continue;
+                
+            Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+            if (!quest) continue;
+            
+            // Check if this creature is required for any quest objective
+            for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i) {
+                if (quest->RequiredNpcOrGo[i] > 0 && quest->RequiredNpcOrGo[i] == (int32)c->GetEntry()) {
+                    uint32 currentCount = bot->GetReqKillOrCastCurrentCount(questId, quest->RequiredNpcOrGo[i]);
+                    uint32 requiredCount = quest->RequiredNpcOrGoCount[i];
+                    
+                    if (currentCount < requiredCount) {
+                        questTarget = " [QUEST TARGET - " + quest->GetTitle() + "]";
+                        break;
+                    }
+                }
+            }
+            if (!questTarget.empty()) break;
+        }
+
         float dist = bot->GetDistance(c);
         visible.push_back(fmt::format(
-            "{}: {}{} (guid: {}, Level: {}, HP: {}/{}, Position: {} {} {}, Distance: {:.1f})",
+            "{}: {}{}{} (guid: {}, Level: {}, HP: {}/{}, Position: {} {} {}, Distance: {:.1f})",
             type,
             c->GetName(),
             questGiver,
+            questTarget,
             c->GetGUID().GetCounter(),
             c->GetLevel(),
             c->GetHealth(),
@@ -1219,14 +1308,27 @@ static std::string BuildBotPrompt(Player* bot)
         
         // Check for enemies and add a warning
         bool hasEnemies = false;
+        bool hasNeutrals = false;
+        bool hasQuestTargets = false;
         for (const auto& entry : losLocs) {
             if (entry.find("ENEMY:") != std::string::npos) {
                 hasEnemies = true;
-                break;
             }
+            if (entry.find("NEUTRAL:") != std::string::npos) {
+                hasNeutrals = true;
+            }
+            if (entry.find("[QUEST TARGET") != std::string::npos) {
+                hasQuestTargets = true;
+            }
+        }
+        if (hasQuestTargets) {
+            oss << "*** QUEST TARGETS AVAILABLE! Attack the creatures marked with [QUEST TARGET] to complete your objectives! ***\n";
         }
         if (hasEnemies) {
             oss << "*** WARNING: ENEMIES ARE VISIBLE! You should attack them for XP and to defend yourself! ***\n";
+        }
+        if (hasNeutrals && !hasQuestTargets) {
+            oss << "*** NEUTRAL CREATURES VISIBLE: These may be needed for quest objectives! Check your quest targets and attack if needed! ***\n";
         }
     }
 
@@ -1332,7 +1434,9 @@ static std::string BuildBotPrompt(Player* bot)
     - If you're too close to your target (distance <= 0.15) then move away before attacking again.
     - DO NOT TRY TO ATTACK OR DEFEND FROM CREATURES TAGGED AS DEAD.
     - BE AGGRESSIVE, killing things around your level grants you XP to level up. Attack monsters nearby to help level up.
-    - If you're under level 5 PRIORITIZE attacking Neutral creatures, but after level 5 only prioritize attacking Hostile creatures.
+    - QUEST CREATURES PRIORITY: Always attack creatures needed for your quest objectives, regardless of their faction (hostile, neutral, or friendly)
+    - If no quest target creatures are visible, prioritize attacking hostile creatures for XP and safety
+    - NEUTRAL CREATURES: Attack neutral creatures if they are needed for quest objectives or if they're aggressive toward you
     - Make sure you're using your spells, if you have the resource cost and the spell sounds like it would help in combat, use a spell command picking a logical target guid!
     - COMBAT TYPE AWARENESS: Your combat summary shows if you're a MELEE, RANGED, or HYBRID fighter. Use this to determine proper positioning and tactics.
 

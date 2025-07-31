@@ -32,12 +32,41 @@ namespace BotBuddyAI
         PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
         if (!ai) return false;
         
-        // Use the bot's AI system to handle movement using coordinate format
+        if (g_EnableOllamaBotBuddyDebug) {
+            LOG_INFO("server.loading", "[OllamaBotBuddy] MoveTo called for bot {} to position ({:.2f}, {:.2f}, {:.2f})", 
+                bot->GetName(), x, y, z);
+        }
+        
+        // Validate coordinates are reasonable 
+        if (std::isnan(x) || std::isnan(y) || std::isnan(z) || 
+            std::isinf(x) || std::isinf(y) || std::isinf(z)) {
+            if (g_EnableOllamaBotBuddyDebug) {
+                LOG_ERROR("server.loading", "[OllamaBotBuddy] Invalid coordinates for MoveTo: ({}, {}, {})", x, y, z);
+            }
+            return false;
+        }
+        
+        // Clear existing movement
+        bot->GetMotionMaster()->Clear(false);
+        bot->StopMoving();
+        
+        // Use direct movement for immediate response
+        bot->GetMotionMaster()->MovePoint(0, x, y, z);
+        
+        // Also try using the bot's AI movement system as backup
         std::ostringstream coords;
         coords << x << ";" << y << ";" << z;
-        
         Event event = Event("", coords.str());
-        return ai->DoSpecificAction("go", event);
+        ai->DoSpecificAction("go", event);
+        
+        if (g_EnableOllamaBotBuddyDebug) {
+            float distance = sqrt(pow(x - bot->GetPositionX(), 2) + 
+                                pow(y - bot->GetPositionY(), 2) + 
+                                pow(z - bot->GetPositionZ(), 2));
+            LOG_INFO("server.loading", "[OllamaBotBuddy] MoveTo initiated, distance: {:.2f}", distance);
+        }
+        
+        return true;
     }
 
     bool Attack(Player* bot, ObjectGuid guid)
