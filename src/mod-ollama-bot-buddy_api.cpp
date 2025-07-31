@@ -12,15 +12,60 @@
 #include "GridNotifiersImpl.h"
 #include "Cell.h"
 #include "Map.h"
+#include "Event.h"
+#include "QuestDef.h"
+#include "WorldPacket.h"
+#include "WorldSession.h"
+#include "GossipDef.h"
 #include <sstream>
+
+// Constants for interaction and combat ranges
+#define INTERACTION_DISTANCE 5.5f
+#define ATTACK_DISTANCE 5.0f
 
 namespace BotBuddyAI
 {
     bool MoveTo(Player* bot, float x, float y, float z)
     {
         if (!bot) return false;
-        bot->GetMotionMaster()->Clear();
+        
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+        
+        if (g_EnableOllamaBotBuddyDebug) {
+            LOG_INFO("server.loading", "[OllamaBotBuddy] MoveTo called for bot {} to position ({:.2f}, {:.2f}, {:.2f})", 
+                bot->GetName(), x, y, z);
+        }
+        
+        // Validate coordinates are reasonable 
+        if (std::isnan(x) || std::isnan(y) || std::isnan(z) || 
+            std::isinf(x) || std::isinf(y) || std::isinf(z)) {
+            if (g_EnableOllamaBotBuddyDebug) {
+                LOG_ERROR("server.loading", "[OllamaBotBuddy] Invalid coordinates for MoveTo: ({}, {}, {})", x, y, z);
+            }
+            return false;
+        }
+        
+        // Clear existing movement
+        bot->GetMotionMaster()->Clear(false);
+        bot->StopMoving();
+        
+        // Use direct movement for immediate response
         bot->GetMotionMaster()->MovePoint(0, x, y, z);
+        
+        // Also try using the bot's AI movement system as backup
+        std::ostringstream coords;
+        coords << x << ";" << y << ";" << z;
+        Event event = Event("", coords.str());
+        ai->DoSpecificAction("go", event);
+        
+        if (g_EnableOllamaBotBuddyDebug) {
+            float distance = sqrt(pow(x - bot->GetPositionX(), 2) + 
+                                pow(y - bot->GetPositionY(), 2) + 
+                                pow(z - bot->GetPositionZ(), 2));
+            LOG_INFO("server.loading", "[OllamaBotBuddy] MoveTo initiated, distance: {:.2f}", distance);
+        }
+        
         return true;
     }
 
@@ -28,15 +73,146 @@ namespace BotBuddyAI
     {
         if (!bot || !guid) return false;
 
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+
         Unit* target = ObjectAccessor::GetUnit(*bot, guid);
-        if (!target || !bot->IsWithinLOSInMap(target)) return false;
+        if (!target || !bot->IsWithinLOSInMap(target)) {
+            if (g_EnableOllamaBotBuddyDebug) {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Target not found or not in LOS for guid: {}", guid.GetCounter());
+            }
+            return false;
+        }
 
-        bot->SetSelection(target->GetGUID());
+        // CRITICAL: Validate target before attacking to prevent friendly fire
+        if (!bot->IsValidAttackTarget(target)) {
+            if (g_EnableOllamaBotBuddyDebug) {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Invalid attack target: {} - not attackable", target->GetName());
+            }
+            return false;
+        }
+
+        // Check if target is friendly - absolutely prevent attacking friendlies
+        if (bot->IsFriendlyTo(target)) {
+            if (g_EnableOllamaBotBuddyDebug) {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Refusing to attack friendly target: {}", target->GetName());
+            }
+            return false;
+        }
+
+        // Additional safety: check if target is in same group or guild
+        if (Player* targetPlayer = target->ToPlayer()) {
+            if (bot->IsInSameGroupWith(targetPlayer) || (bot->GetGuildId() != 0 && bot->GetGuildId() == targetPlayer->GetGuildId())) {
+                if (g_EnableOllamaBotBuddyDebug) {
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Refusing to attack group/guild member: {}", target->GetName());
+                }
+                return false;
+            }
+        }
+
+        // Check if target is dead - if so, refuse to attack and suggest looting instead
+        if (!target->IsAlive()) {
+            if (g_EnableOllamaBotBuddyDebug) {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] REFUSING to attack dead target: {} - it should be looted, not attacked", target->GetName());
+            }
+            return false; // Explicitly refuse to attack dead creatures
+        }
+        
+        // Check if target is GM
+        if (target->ToPlayer() && target->ToPlayer()->IsGameMaster()) {
+            if (g_EnableOllamaBotBuddyDebug) {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Target is GM: {}", target->GetName());
+            }
+            return false;
+        }
+
+        if (g_EnableOllamaBotBuddyDebug)
+        {
+            LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} attacking target {} (guid: {})", 
+                bot->GetName(), target->GetName(), guid.GetCounter());
+        }
+
+        // Calculate ranges properly using AzerothCore standards
+        float currentDistance = bot->GetExactDist2d(target);
+        float meleeRange = bot->GetMeleeRange(target); // This includes combat reach calculation
+        float combatReach = bot->GetCombatReach() + target->GetCombatReach();
+        
+        if (g_EnableOllamaBotBuddyDebug) {
+            LOG_INFO("server.loading", "[OllamaBotBuddy] Combat distances - Current: {:.2f}, Melee: {:.2f}, CombatReach: {:.2f}", 
+                currentDistance, meleeRange, combatReach);
+        }
+
+        // Set target in AI context immediately for proper behavior
+        ai->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(target);
+        ai->GetAiObjectContext()->GetValue<ObjectGuid>("pull target")->Set(guid);
+        
+        // Set selection and target properly
+        bot->SetSelection(guid);
+        bot->SetTarget(guid);
+        
+        // Face the target if in combat or close
+        if (bot->IsInCombat() || currentDistance <= meleeRange + 5.0f) {
+            bot->SetFacingToObject(target);
+        }
+        
+        // Check if we need to move closer for melee combat
+        if (currentDistance > meleeRange) {
+            if (g_EnableOllamaBotBuddyDebug) {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Moving to melee range - distance {:.2f} > meleeRange {:.2f}", 
+                    currentDistance, meleeRange);
+            }
+            
+            // Clear any existing movement and start chasing
+            bot->GetMotionMaster()->Clear();
+            
+            // Use MoveChase with proper melee range - this should get the bot close enough to attack
+            bot->GetMotionMaster()->MoveChase(target, 0.0f); // 0.0f means use default melee range
+            
+            // Change to combat engine to enable combat actions
+            ai->ChangeEngine(BOT_STATE_COMBAT);
+            
+            // Also use playerbot AI movement action as backup
+            Event moveEvent = Event("", "");
+            ai->DoSpecificAction("reach melee", moveEvent);
+            
+            return true; // Movement initiated, attack will happen when in range
+        }
+        
+        // We're in melee range - initiate combat
+        if (g_EnableOllamaBotBuddyDebug) {
+            LOG_INFO("server.loading", "[OllamaBotBuddy] In melee range, starting combat");
+        }
+        
+        // Change to combat engine to enable combat actions
+        ai->ChangeEngine(BOT_STATE_COMBAT);
+        
+        // Face the target before attacking
         bot->SetFacingToObject(target);
+        
+        // Start auto-attack
         bot->Attack(target, true);
-        bot->GetMotionMaster()->Clear();
-        bot->GetMotionMaster()->MoveChase(target);
-
+        
+        // Use playerbot AI actions for better combat behavior
+        Event event = Event("", "");
+        bool result = false;
+        
+        // Try playerbot combat actions in order of preference
+        if (ai->IsTank(bot)) {
+            result = ai->DoSpecificAction("tank assist", event);
+        } else {
+            result = ai->DoSpecificAction("dps assist", event);
+        }
+        
+        // Fallback to melee action if assist actions fail
+        if (!result) {
+            result = ai->DoSpecificAction("melee", event);
+        }
+        
+        if (g_EnableOllamaBotBuddyDebug) {
+            LOG_INFO("server.loading", "[OllamaBotBuddy] Combat initiated, playerbot action result: {}", 
+                result ? "SUCCESS" : "FALLBACK_TO_MANUAL");
+        }
+        
         return true;
     }
 
@@ -44,75 +220,534 @@ namespace BotBuddyAI
     {
         if (!bot || !guid) return false;
 
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+
         if (Creature* creature = ObjectAccessor::GetCreature(*bot, guid))
         {
-            bot->SetFacingToObject(creature);
-            creature->AI()->sGossipHello(bot);
-            return true;
+            // Check interaction distance FIRST - move closer if needed
+            float distance = bot->GetDistance(creature);
+            if (distance > INTERACTION_DISTANCE)
+            {
+                // Too far - move closer first
+                if (g_EnableOllamaBotBuddyDebug) {
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} moving to interact with {} at distance {:.1f}", 
+                        bot->GetName(), creature->GetName(), distance);
+                }
+                
+                // Calculate a position close to the creature but not directly on top
+                float angle = creature->GetAngle(bot);
+                float destX = creature->GetPositionX() + cos(angle + M_PI) * 3.0f; // 3 yards away
+                float destY = creature->GetPositionY() + sin(angle + M_PI) * 3.0f;
+                float destZ = creature->GetPositionZ();
+                
+                bot->GetMotionMaster()->Clear();
+                bot->GetMotionMaster()->MovePoint(0, destX, destY, destZ);
+                return true; // Movement initiated, interaction will happen next cycle
+            }
+            
+            // Check if this is a quest giver and handle quest interaction properly
+            if (creature->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER))
+            {
+                return InteractWithQuestGiver(bot, creature);
+            }
+            else
+            {
+                // For non-quest NPCs, use gossip hello action
+                bot->SetFacingToObject(creature);
+                Event event = Event("", std::to_string(guid.GetCounter()));
+                return ai->DoSpecificAction("gossip hello", event);
+            }
         }
         else if (GameObject* go = ObjectAccessor::GetGameObject(*bot, guid))
         {
-            bot->SetFacingToObject(go);
-            go->Use(bot);
+            // Check interaction distance FIRST - move closer if needed  
+            float distance = bot->GetDistance(go);
+            float interactionDist = go->GetInteractionDistance();
+            if (distance > interactionDist)
+            {
+                // Too far - move closer first
+                if (g_EnableOllamaBotBuddyDebug) {
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} moving to interact with {} at distance {:.1f}", 
+                        bot->GetName(), go->GetName(), distance);
+                }
+                
+                // Calculate a position close to the object but not directly on top
+                float angle = go->GetAngle(bot);
+                float destX = go->GetPositionX() + cos(angle + M_PI) * 2.0f; // 2 yards away
+                float destY = go->GetPositionY() + sin(angle + M_PI) * 2.0f;
+                float destZ = go->GetPositionZ();
+                
+                bot->GetMotionMaster()->Clear();
+                bot->GetMotionMaster()->MovePoint(0, destX, destY, destZ);
+                return true; // Movement initiated, interaction will happen next cycle
+            }
+            
+            // Check if this is a quest giver game object
+            if (go->GetGoType() == GAMEOBJECT_TYPE_QUESTGIVER)
+            {
+                return InteractWithQuestGiver(bot, go);
+            }
+            else
+            {
+                // Use the bot's AI system to handle interaction with game objects
+                bot->SetFacingToObject(go);
+                Event event = Event("", go->GetGOInfo()->name);
+                return ai->DoSpecificAction("use", event);
+            }
+        }
+        return false;
+    }
+
+    bool InteractWithQuestGiver(Player* bot, WorldObject* questGiver)
+    {
+        if (!bot || !questGiver) return false;
+
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+
+        // Check interaction distance
+        if (bot->GetDistance(questGiver) > INTERACTION_DISTANCE)
+        {
+            return false;
+        }
+
+        // Face the quest giver
+        if (!bot->HasInArc(CAST_ANGLE_IN_FRONT, questGiver, sPlayerbotAIConfig->sightDistance))
+            bot->SetFacingToObject(questGiver);
+
+        ObjectGuid guid = questGiver->GetGUID();
+        
+        // Prepare the quest menu for this quest giver
+        bot->PrepareQuestMenu(guid);
+        QuestMenu& questMenu = bot->PlayerTalkClass->GetQuestMenu();
+
+        bool foundQuestAction = false;
+
+        // Process all available quest menu items
+        for (uint32 i = 0; i < questMenu.GetMenuItemCount(); ++i)
+        {
+            QuestMenuItem const& menuItem = questMenu.GetItem(i);
+            Quest const* quest = sObjectMgr->GetQuestTemplate(menuItem.QuestId);
+            if (!quest) continue;
+
+            QuestStatus status = bot->GetQuestStatus(menuItem.QuestId);
+            
+            // Handle completed quests first (highest priority)
+            if (status == QUEST_STATUS_COMPLETE && bot->CanRewardQuest(quest, false))
+            {
+                // Turn in the quest using the playerbot action system
+                TurnInQuest(bot, menuItem.QuestId);
+                foundQuestAction = true;
+                
+                if (g_EnableOllamaBotBuddyDebug)
+                {
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} turning in quest {}: {}", 
+                        bot->GetName(), menuItem.QuestId, quest->GetTitle());
+                }
+            }
+            // Handle new quests that can be accepted
+            else if (status == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false))
+            {
+                // Accept the quest using the playerbot action system
+                AcceptQuest(bot, menuItem.QuestId);
+                foundQuestAction = true;
+                
+                if (g_EnableOllamaBotBuddyDebug)
+                {
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} accepting quest {}: {}", 
+                        bot->GetName(), menuItem.QuestId, quest->GetTitle());
+                }
+            }
+        }
+
+        // If we found quest actions, return success
+        if (foundQuestAction)
+        {
             return true;
         }
+
+        // If no direct quest actions were available, try automatic gossip navigation
+        if (Creature* creature = questGiver->ToCreature())
+        {
+            // Try to automatically navigate gossip menus for quest options
+            if (AutoNavigateGossipForQuests(bot, creature))
+            {
+                return true;
+            }
+            
+            // Fallback to basic gossip hello action
+            Event event = Event("", std::to_string(guid.GetCounter()));
+            return ai->DoSpecificAction("gossip hello", event);
+        }
+        else if (GameObject* go = questGiver->ToGameObject())
+        {
+            // Use game object interaction
+            Event event = Event("", go->GetGOInfo()->name);
+            return ai->DoSpecificAction("use", event);
+        }
+
+        return false;
+    }
+
+    bool AutoNavigateGossipForQuests(Player* bot, Creature* creature)
+    {
+        if (!bot || !creature) return false;
+
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+
+        // Start gossip interaction
+        WorldPacket packet(CMSG_GOSSIP_HELLO);
+        packet << creature->GetGUID();
+        bot->GetSession()->HandleGossipHelloOpcode(packet);
+
+        // Wait a moment for the server to process
+        if (!bot->PlayerTalkClass) return false;
+
+        GossipMenu& gossipMenu = bot->PlayerTalkClass->GetGossipMenu();
+        QuestMenu& questMenu = bot->PlayerTalkClass->GetQuestMenu();
+
+        // First priority: Handle direct quest menus
+        for (uint32 i = 0; i < questMenu.GetMenuItemCount(); ++i)
+        {
+            QuestMenuItem const& menuItem = questMenu.GetItem(i);
+            Quest const* quest = sObjectMgr->GetQuestTemplate(menuItem.QuestId);
+            if (!quest) continue;
+
+            QuestStatus status = bot->GetQuestStatus(menuItem.QuestId);
+            
+            if (status == QUEST_STATUS_COMPLETE && bot->CanRewardQuest(quest, false))
+            {
+                TurnInQuest(bot, menuItem.QuestId);
+                return true;
+            }
+            else if (status == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false))
+            {
+                AcceptQuest(bot, menuItem.QuestId);
+                return true;
+            }
+        }
+
+        // Second priority: Navigate gossip menu for quest-related options
+        GossipMenuItemContainer const& gossipItems = gossipMenu.GetMenuItems();
+        for (auto const& item : gossipItems)
+        {
+            GossipMenuItem const* gossipItem = &item.second;
+            std::string message = gossipItem->Message;
+            
+            // Look for quest-related gossip options with enhanced keyword matching
+            if (message.find("quest") != std::string::npos || 
+                message.find("Quest") != std::string::npos ||
+                message.find("mission") != std::string::npos ||
+                message.find("task") != std::string::npos ||
+                message.find("reward") != std::string::npos ||
+                message.find("complete") != std::string::npos ||
+                message.find("turn in") != std::string::npos ||
+                message.find("finish") != std::string::npos)
+            {
+                // Select this gossip option
+                WorldPacket selectPacket(CMSG_GOSSIP_SELECT_OPTION);
+                selectPacket << creature->GetGUID();
+                selectPacket << gossipMenu.GetMenuId();
+                selectPacket << item.first;
+                selectPacket << std::string("");
+                bot->GetSession()->HandleGossipSelectOptionOpcode(selectPacket);
+                
+                if (g_EnableOllamaBotBuddyDebug)
+                {
+                    LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} selected gossip option: {}", 
+                        bot->GetName(), message);
+                }
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    bool HasQuestsAvailable(Player* bot, WorldObject* questGiver)
+    {
+        if (!bot || !questGiver) return false;
+
+        // For creatures, check their quest relations directly (more efficient)
+        if (Creature* creature = questGiver->ToCreature())
+        {
+            // Check for completable quests first (highest priority)
+            QuestRelationBounds qir = sObjectMgr->GetCreatureQuestInvolvedRelationBounds(creature->GetEntry());
+            for (QuestRelations::const_iterator itr = qir.first; itr != qir.second; ++itr)
+            {
+                uint32 questId = itr->second;
+                if (bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE && !bot->GetQuestRewardStatus(questId))
+                {
+                    return true; // Has quest ready to turn in
+                }
+            }
+            
+            // Check for available quests (secondary priority)
+            QuestRelationBounds qr = sObjectMgr->GetCreatureQuestRelationBounds(creature->GetEntry());
+            for (QuestRelations::const_iterator itr = qr.first; itr != qr.second; ++itr)
+            {
+                uint32 questId = itr->second;
+                Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+                if (quest && bot->GetQuestStatus(questId) == QUEST_STATUS_NONE && 
+                    bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false))
+                {
+                    return true; // Has quest available to accept
+                }
+            }
+        }
+        // For game objects, check quest relations
+        else if (GameObject* go = questGiver->ToGameObject())
+        {
+            // Check for completable quests
+            QuestRelationBounds qir = sObjectMgr->GetGOQuestInvolvedRelationBounds(go->GetEntry());
+            for (QuestRelations::const_iterator itr = qir.first; itr != qir.second; ++itr)
+            {
+                uint32 questId = itr->second;
+                if (bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE && !bot->GetQuestRewardStatus(questId))
+                {
+                    return true;
+                }
+            }
+            
+            // Check for available quests
+            QuestRelationBounds qr = sObjectMgr->GetGOQuestRelationBounds(go->GetEntry());
+            for (QuestRelations::const_iterator itr = qr.first; itr != qr.second; ++itr)
+            {
+                uint32 questId = itr->second;
+                Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+                if (quest && bot->GetQuestStatus(questId) == QUEST_STATUS_NONE && 
+                    bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false))
+                {
+                    return true;
+                }
+            }
+        }
+        
         return false;
     }
 
     bool CastSpell(Player* bot, uint32 spellId, Unit* target)
     {
         if (!bot) return false;
-        if (!target) target = bot->GetVictim();
-        if (!target) return false;
-
-        bot->SetFacingToObject(target);
-        bot->CastSpell(target, spellId, false);
-        return true;
+        
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+        
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        if (!spellInfo) return false;
+        
+        // Set the target in the AI context if provided
+        if (target) {
+            ai->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(target);
+            
+            // Check range requirements for the spell
+            float spellRange = spellInfo->GetMaxRange(false);
+            float currentDistance = bot->GetDistance(target);
+            bool isMeleeSpell = spellRange <= ATTACK_DISTANCE;
+            
+            if (g_EnableOllamaBotBuddyDebug) {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Casting spell {} on target at distance {:.1f}, spell range: {:.1f}", 
+                    spellInfo->SpellName[0], currentDistance, spellRange);
+            }
+            
+            // Handle positioning for spell casting
+            Event moveEvent = Event("", "");
+            if (isMeleeSpell && !bot->IsWithinMeleeRange(target)) {
+                // Need to get into melee range for melee spells
+                ai->DoSpecificAction("reach melee", moveEvent);
+            } else if (!isMeleeSpell && currentDistance > spellRange) {
+                // Need to get into spell range for ranged spells
+                ai->DoSpecificAction("reach spell", moveEvent);
+            } else if (!isMeleeSpell && currentDistance < 5.0f && ai->IsRanged(bot)) {
+                // Ranged character too close - back away for better positioning
+                ai->DoSpecificAction("flee", moveEvent);
+            }
+        }
+        
+        // Use the spell name directly as the action
+        const char* spellName = spellInfo->SpellName[0];
+        if (!spellName || !*spellName) return false;
+        
+        Event event = Event("", "");
+        bool result = ai->DoSpecificAction(spellName, event);
+        
+        // If spell casting by name fails, try using spell ID
+        if (!result && target) {
+            // Try alternative approaches
+            std::string spellIdStr = std::to_string(spellId);
+            event = Event("", spellIdStr);
+            result = ai->DoSpecificAction("cast", event);
+        }
+        
+        if (g_EnableOllamaBotBuddyDebug) {
+            LOG_INFO("server.loading", "[OllamaBotBuddy] Spell cast result for {}: {}", 
+                spellName, result ? "SUCCESS" : "FAILED");
+        }
+        
+        return result;
     }
 
     bool Say(Player* bot, const std::string& msg)
     {
         if (!bot) return false;
-        bot->Say(msg, LANG_UNIVERSAL);
-        return true;
+        
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+        
+        // Use the bot's AI system to handle saying
+        Event event = Event("", msg);
+        return ai->DoSpecificAction("say", event);
     }
 
     bool FollowMaster(Player* bot)
     {
         if (!bot) return false;
+        
         PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
         if (!ai) return false;
-        Player* master = ai->GetMaster();
-        if (!master) return false;
-
-        bot->GetMotionMaster()->Clear();
-        bot->GetMotionMaster()->MoveFollow(master, 1.0f, 0.0f);
-        return true;
+        
+        // Use the bot's AI system to handle following
+        Event event = Event("", "");
+        return ai->DoSpecificAction("follow", event);
     }
 
     bool StopMoving(Player* bot)
     {
         if (!bot) return false;
-        bot->GetMotionMaster()->Clear();
-        return true;
+        
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+        
+        // Use the bot's AI system to handle stopping
+        Event event = Event("", "");
+        return ai->DoSpecificAction("stay", event);
     }
 
     bool AcceptQuest(Player* bot, uint32 questId)
     {
         if (!bot) return false;
+        
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+        
         Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
         if (!quest) return false;
-        bot->AddQuest(quest, nullptr);
-        return true;
+
+        // Use the playerbot AI system to handle quest acceptance
+        Event event = Event("", std::to_string(questId));
+        return ai->DoSpecificAction("accept quest", event);
     }
 
     bool TurnInQuest(Player* bot, uint32 questId)
     {
         if (!bot) return false;
+        
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
+        
         Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
         if (!quest) return false;
-        bot->CompleteQuest(questId);
-        bot->RewardQuest(quest, 0, bot);
+
+        // Check if quest is ready to turn in
+        if (bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE || bot->GetQuestRewardStatus(questId))
+        {
+            if (g_EnableOllamaBotBuddyDebug)
+            {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} cannot turn in quest {}: status={}, already rewarded={}", 
+                    bot->GetName(), questId, bot->GetQuestStatus(questId), bot->GetQuestRewardStatus(questId));
+            }
+            return false;
+        }
+        
+        if (!bot->CanRewardQuest(quest, false))
+        {
+            if (g_EnableOllamaBotBuddyDebug)
+            {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} cannot reward quest {}: requirements not met", 
+                    bot->GetName(), questId);
+            }
+            return false;
+        }
+        
+        // Find quest giver in range
+        ObjectGuid questGiverGuid;
+        Map* map = bot->GetMap();
+        if (map)
+        {
+            for (auto const& pair : map->GetCreatureBySpawnIdStore())
+            {
+                Creature* creature = pair.second;
+                if (!creature || !bot->IsWithinDistInMap(creature, INTERACTION_DISTANCE)) continue;
+                if (!creature->hasInvolvedQuest(questId)) continue;
+                
+                questGiverGuid = creature->GetGUID();
+                break;
+            }
+            
+            // Also check game objects
+            if (!questGiverGuid)
+            {
+                for (auto const& pair : map->GetGameObjectBySpawnIdStore())
+                {
+                    GameObject* go = pair.second;
+                    if (!go || !bot->IsWithinDistInMap(go, INTERACTION_DISTANCE)) continue;
+                    if (!go->hasInvolvedQuest(questId)) continue;
+                    
+                    questGiverGuid = go->GetGUID();
+                    break;
+                }
+            }
+        }
+        
+        if (!questGiverGuid)
+        {
+            if (g_EnableOllamaBotBuddyDebug)
+            {
+                LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} cannot find quest giver for quest {}", 
+                    bot->GetName(), questId);
+            }
+            return false;
+        }
+        
+        // First, initiate quest completion dialog
+        WorldPacket completePacket(CMSG_QUESTGIVER_COMPLETE_QUEST);
+        completePacket << questGiverGuid << questId;
+        completePacket.rpos(0);
+        bot->GetSession()->HandleQuestgiverCompleteQuest(completePacket);
+        
+        // Handle quest rewards
+        uint32 rewardIndex = 0;
+        if (quest->GetRewChoiceItemsCount() > 1)
+        {
+            // Find the best reward using simple logic
+            for (uint32 i = 0; i < quest->GetRewChoiceItemsCount(); ++i)
+            {
+                if (quest->RewardChoiceItemId[i])
+                {
+                    ItemTemplate const* item = sObjectMgr->GetItemTemplate(quest->RewardChoiceItemId[i]);
+                    if (item && bot->CanUseItem(item) == EQUIP_ERR_OK)
+                    {
+                        rewardIndex = i;
+                        break; // Use first usable reward
+                    }
+                }
+            }
+        }
+        
+        // Complete the reward selection
+        WorldPacket rewardPacket(CMSG_QUESTGIVER_CHOOSE_REWARD);
+        rewardPacket << questGiverGuid << questId << rewardIndex;
+        rewardPacket.rpos(0);
+        bot->GetSession()->HandleQuestgiverChooseRewardOpcode(rewardPacket);
+        
+        if (g_EnableOllamaBotBuddyDebug)
+        {
+            LOG_INFO("server.loading", "[OllamaBotBuddy] Bot {} turned in quest {}: {} with reward index {}", 
+                bot->GetName(), questId, quest->GetTitle(), rewardIndex);
+        }
+        
         return true;
     }
 
@@ -120,23 +755,12 @@ namespace BotBuddyAI
     {
         if (!bot) return false;
 
-        Map* map = bot->GetMap();
-        if (!map) return false;
+        PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+        if (!ai) return false;
 
-        for (const auto& pair : map->GetCreatureBySpawnIdStore())
-        {
-            Creature* creature = pair.second;
-            if (!creature || !creature->isDead()) continue;
-
-            if (!bot->IsWithinDistInMap(creature, INTERACTION_DISTANCE)) continue;
-
-            bot->SetFacingToObject(creature);
-            bot->PrepareGossipMenu(creature, creature->GetCreatureTemplate()->GossipMenuId);
-            bot->SendLoot(creature->GetGUID(), LOOT_CORPSE);
-            return true;
-        }
-
-        return false;
+        // Use the bot's AI system to handle looting
+        Event event = Event("", "");
+        return ai->DoSpecificAction("loot", event);
     }
 
 } // namespace BotBuddyAI

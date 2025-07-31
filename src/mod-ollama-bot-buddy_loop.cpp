@@ -18,6 +18,7 @@
 #include "GameObject.h"
 #include "TravelMgr.h"
 #include "TravelNode.h"
+#include "PathGenerator.h"
 #include <atomic>
 #include <unordered_map>
 #include <iomanip>
@@ -28,10 +29,15 @@
 #include "SpellMgr.h"
 #include "SpellInfo.h"
 #include "SharedDefines.h"
+#include "QuestDef.h"
+#include "ObjectMgr.h"
+#include <algorithm>
 #include "Chat.h"
 #include "ScriptMgr.h"
 #include <algorithm>
 #include <string>
+#include "ItemTemplate.h"
+#include "CreatureData.h"
 
 
 static std::unordered_map<uint64_t, std::deque<std::string>> botCommandHistory;
@@ -114,11 +120,47 @@ bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
         if (type == "move_to")
         {
             if (params.contains("x") && params.contains("y") && params.contains("z")) {
+                float destX = params["x"].get<float>();
+                float destY = params["y"].get<float>();
+                float destZ = params["z"].get<float>();
+                
+                // Basic coordinate validation - reject obviously invalid coordinates
+                if (std::isnan(destX) || std::isnan(destY) || std::isnan(destZ) || 
+                    std::isinf(destX) || std::isinf(destY) || std::isinf(destZ)) {
+                    LOG_DEBUG("server.loading", "[OllamaBotBuddy] Invalid coordinates for move_to: ({}, {}, {})", 
+                             destX, destY, destZ);
+                    return false;
+                }
+                
+                // Validate map bounds - reject coordinates that are extremely far from bot
+                float maxDistanceFromBot = 500.0f; // Maximum reasonable movement distance
+                float distanceFromBot = sqrt(pow(destX - bot->GetPositionX(), 2) + 
+                                           pow(destY - bot->GetPositionY(), 2) + 
+                                           pow(destZ - bot->GetPositionZ(), 2));
+                
+                if (distanceFromBot > maxDistanceFromBot) {
+                    LOG_DEBUG("server.loading", "[OllamaBotBuddy] Move_to destination too far from bot: ({}, {}, {}) - Distance: {:.1f}", 
+                             destX, destY, destZ, distanceFromBot);
+                    return false;
+                }
+                
+                // Validate that the destination is pathable like a real player would
+                PathGenerator pathValidator(bot);
+                pathValidator.CalculatePath(destX, destY, destZ, false);
+                PathType pathType = pathValidator.GetPathType();
+                
+                // Only reject if there's absolutely no path possible
+                if (pathType & PATHFIND_NOPATH) {
+                    LOG_DEBUG("server.loading", "[OllamaBotBuddy] No valid path for move_to: ({}, {}, {}) - PathType: {}", 
+                             destX, destY, destZ, pathType);
+                    return false; // Only reject if completely impossible to path
+                }
+                
                 command.type = BotControlCommandType::MoveTo;
                 command.args = {
-                    std::to_string(params["x"].get<float>()),
-                    std::to_string(params["y"].get<float>()),
-                    std::to_string(params["z"].get<float>())
+                    std::to_string(destX),
+                    std::to_string(destY),
+                    std::to_string(destZ)
                 };
             } else {
                 LOG_ERROR("server.loading", "[OllamaBotBuddy] move_to missing parameter");
@@ -128,8 +170,70 @@ bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
         else if (type == "attack")
         {
             if (params.contains("guid")) {
+                uint32_t targetGuid = params["guid"].get<uint32_t>();
+                
+                // Validate that the target exists and is attackable
+                bool validTarget = false;
+                
+                // Check if it's a creature
+                for (auto const& pair : bot->GetMap()->GetCreatureBySpawnIdStore())
+                {
+                    Creature* c = pair.second;
+                    if (c && c->GetGUID().GetCounter() == targetGuid)
+                    {
+                        // Validate target is attackable
+                        if (c->IsInWorld() && !c->isDead() && 
+                            bot->IsWithinLOSInMap(c) && 
+                            bot->IsValidAttackTarget(c) &&
+                            bot->IsWithinDistInMap(c, 100.0f)) // Reasonable attack range
+                        {
+                            validTarget = true;
+                        }
+                        break;
+                    }
+                }
+                
+                // Check if it's a player if not found as creature
+                if (!validTarget)
+                {
+                    ObjectGuid guid = ObjectGuid::Create<HighGuid::Player>(targetGuid);
+                    Player* playerTarget = ObjectAccessor::FindConnectedPlayer(guid);
+                    if (playerTarget && playerTarget->IsInWorld() && 
+                        bot->IsWithinLOSInMap(playerTarget) && 
+                        bot->IsValidAttackTarget(playerTarget) &&
+                        bot->IsWithinDistInMap(playerTarget, 100.0f))
+                    {
+                        validTarget = true;
+                    }
+                }
+                
+                if (!validTarget) {
+                    LOG_ERROR("server.loading", "[OllamaBotBuddy] Invalid or unreachable attack target with guid: {} - Target not found in visible creatures/players", targetGuid);
+                    
+                    // Debug: List available creature GUIDs for debugging
+                    if (g_EnableOllamaBotBuddyDebug) {
+                        std::vector<uint32> availableGuids;
+                        for (auto const& pair : bot->GetMap()->GetCreatureBySpawnIdStore()) {
+                            Creature* c = pair.second;
+                            if (c && bot->IsWithinDistInMap(c, 100.0f)) {
+                                availableGuids.push_back(c->GetGUID().GetCounter());
+                            }
+                        }
+                        
+                        std::ostringstream guidList;
+                        for (size_t i = 0; i < availableGuids.size() && i < 10; ++i) {
+                            if (i > 0) guidList << ", ";
+                            guidList << availableGuids[i];
+                        }
+                        
+                        LOG_DEBUG("server.loading", "[OllamaBotBuddy] Available creature GUIDs: {}", guidList.str());
+                    }
+                    
+                    return false;
+                }
+                
                 command.type = BotControlCommandType::Attack;
-                command.args = { std::to_string(params["guid"].get<uint32_t>()) };
+                command.args = { std::to_string(targetGuid) };
             } else {
                 LOG_ERROR("server.loading", "[OllamaBotBuddy] attack missing guid");
                 return false;
@@ -547,16 +651,137 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
         else type = "NEUTRAL";
 
         std::string questGiver = "";
+        
+        // Only consider NPCs that are actually useful to the bot
         if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER)) {
-            questGiver = " [QUEST GIVER]";
+            // Check if this quest giver has relevant quests for the bot
+            bool hasCompleteQuests = false;
+            bool hasAvailableQuests = false;
+            
+            // Check for completable quests first (highest priority)
+            QuestRelationBounds qir = sObjectMgr->GetCreatureQuestInvolvedRelationBounds(c->GetEntry());
+            for (QuestRelations::const_iterator itr = qir.first; itr != qir.second; ++itr)
+            {
+                uint32 questId = itr->second;
+                if (bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE && !bot->GetQuestRewardStatus(questId))
+                {
+                    hasCompleteQuests = true;
+                    break;
+                }
+            }
+            
+            // Check for available quests (secondary priority)
+            if (!hasCompleteQuests)
+            {
+                QuestRelationBounds qr = sObjectMgr->GetCreatureQuestRelationBounds(c->GetEntry());
+                for (QuestRelations::const_iterator itr = qr.first; itr != qr.second; ++itr)
+                {
+                    uint32 questId = itr->second;
+                    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+                    if (quest && bot->GetQuestStatus(questId) == QUEST_STATUS_NONE && 
+                        bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false))
+                    {
+                        hasAvailableQuests = true;
+                        break;
+                    }
+                }
+            }
+            
+            // Only show quest giver tags if there are actually relevant quests
+            if (hasCompleteQuests) {
+                questGiver = " [QUEST GIVER - TURN IN READY]";
+            } else if (hasAvailableQuests) {
+                questGiver = " [QUEST GIVER - QUESTS AVAILABLE]";
+            }
+        }
+        
+        // Check for other useful NPC types (friendly/neutral only) 
+        // Handle multiple flags - NPCs can be both quest givers AND vendors/trainers
+        if (type == "FRIENDLY" || type == "NEUTRAL") {
+            std::vector<std::string> npcTypes;
+            
+            // Check for vendors
+            if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_VENDOR)) {
+                npcTypes.push_back("[VENDOR]");
+            }
+            // Check for trainers
+            if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_TRAINER)) {
+                npcTypes.push_back("[TRAINER]");
+            }
+            // Check for flight masters
+            if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_FLIGHTMASTER)) {
+                npcTypes.push_back("[FLIGHT MASTER]");
+            }
+            // Check for innkeepers
+            if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_INNKEEPER)) {
+                npcTypes.push_back("[INNKEEPER]");
+            }
+            // Check for bankers
+            if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_BANKER)) {
+                npcTypes.push_back("[BANKER]");
+            }
+            // Check for auctioneers
+            if (c->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_AUCTIONEER)) {
+                npcTypes.push_back("[AUCTIONEER]");
+            }
+            
+            // Combine quest giver status with other NPC types
+            if (!npcTypes.empty()) {
+                if (!questGiver.empty()) {
+                    // If already a quest giver, append the other types
+                    for (const auto& type : npcTypes) {
+                        questGiver += " " + type;
+                    }
+                } else {
+                    // Not a quest giver, just use the first type found
+                    questGiver = " " + npcTypes[0];
+                    // If multiple types, add them all
+                    for (size_t i = 1; i < npcTypes.size(); ++i) {
+                        questGiver += " " + npcTypes[i];
+                    }
+                }
+            }
+        }
+        
+        // Show ALL creatures - don't filter out any visible creatures
+        // The bot needs to see all potential targets, not just "useful" NPCs
+        // Enemies, neutrals, and friendlies should all be visible for decision making
+
+        // Check if this creature is needed for any active quest objectives
+        std::string questTarget = "";
+        for (auto const& qs : bot->getQuestStatusMap())
+        {
+            uint32 questId = qs.first;
+            QuestStatus status = qs.second.Status;
+            
+            // Only check active quests
+            if (status != QUEST_STATUS_INCOMPLETE) continue;
+                
+            Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+            if (!quest) continue;
+            
+            // Check if this creature is required for any quest objective
+            for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i) {
+                if (quest->RequiredNpcOrGo[i] > 0 && quest->RequiredNpcOrGo[i] == (int32)c->GetEntry()) {
+                    uint32 currentCount = bot->GetReqKillOrCastCurrentCount(questId, quest->RequiredNpcOrGo[i]);
+                    uint32 requiredCount = quest->RequiredNpcOrGoCount[i];
+                    
+                    if (currentCount < requiredCount) {
+                        questTarget = " [QUEST TARGET - " + quest->GetTitle() + "]";
+                        break;
+                    }
+                }
+            }
+            if (!questTarget.empty()) break;
         }
 
         float dist = bot->GetDistance(c);
         visible.push_back(fmt::format(
-            "{}: {}{} (guid: {}, Level: {}, HP: {}/{}, Position: {} {} {}, Distance: {:.1f})",
+            "{}: {}{}{} (guid: {}, Level: {}, HP: {}/{}, Position: {} {} {}, Distance: {:.1f})",
             type,
             c->GetName(),
             questGiver,
+            questTarget,
             c->GetGUID().GetCounter(),
             c->GetLevel(),
             c->GetHealth(),
@@ -601,6 +826,31 @@ std::vector<std::string> GetVisibleLocations(Player* bot, float radius = 100.0f)
         ));
     }
 
+    // Sort visible objects to prioritize critical actions
+    std::stable_sort(visible.begin(), visible.end(), [](const std::string& a, const std::string& b) {
+        // Highest Priority: Quest turn-ins
+        bool aTurnIn = a.find("TURN IN READY") != std::string::npos;
+        bool bTurnIn = b.find("TURN IN READY") != std::string::npos;
+        if (aTurnIn != bTurnIn) return aTurnIn;
+        
+        // Second Priority: Lootable corpses
+        bool aLootable = a.find("DEAD (LOOTABLE)") != std::string::npos;
+        bool bLootable = b.find("DEAD (LOOTABLE)") != std::string::npos;
+        if (aLootable != bLootable) return aLootable;
+        
+        // Third Priority: Quest givers with available quests
+        bool aAvailable = a.find("QUESTS AVAILABLE") != std::string::npos;
+        bool bAvailable = b.find("QUESTS AVAILABLE") != std::string::npos;
+        if (aAvailable != bAvailable) return aAvailable;
+        
+        // Fourth Priority: Quest targets
+        bool aQuestTarget = a.find("QUEST TARGET") != std::string::npos;
+        bool bQuestTarget = b.find("QUEST TARGET") != std::string::npos;
+        if (aQuestTarget != bQuestTarget) return aQuestTarget;
+        
+        return false; // Keep original order for everything else
+    });
+
     return visible;
 }
 
@@ -609,6 +859,12 @@ std::string GetCombatSummary(Player* bot)
     std::ostringstream oss;
     bool inCombat = bot->IsInCombat();
     Unit* victim = bot->GetVictim();
+    
+    // Get bot's combat characteristics
+    PlayerbotAI* ai = sPlayerbotsMgr->GetPlayerbotAI(bot);
+    bool isMelee = ai ? ai->IsMelee(bot) : false;
+    bool isRanged = ai ? ai->IsRanged(bot) : false;
+    std::string combatType = isMelee ? "MELEE" : (isRanged ? "RANGED" : "HYBRID");
 
     // Find who is attacking the bot (if anyone)
     Unit* attacker = nullptr;
@@ -638,13 +894,32 @@ std::string GetCombatSummary(Player* bot)
 
     if (inCombat)
     {
-        oss << "IN COMBAT: ";
+        oss << "IN COMBAT (" << combatType << " FIGHTER): ";
         if (victim)
         {
+            float dist = bot->GetDistance(victim);
+            bool inMeleeRange = bot->IsWithinMeleeRange(victim);
+            float spellRange = ai ? ai->GetRange("spell") : 25.0f;
+            bool inSpellRange = dist <= spellRange;
+            
             oss << "Target: " << safe_name(victim)
                 << " (guid: " << safe_guid(victim) << ")"
                 << ", Level: " << safe_level(victim)
-                << ", HP: " << safe_hp(victim) << "/" << safe_maxhp(victim);
+                << ", HP: " << safe_hp(victim) << "/" << safe_maxhp(victim)
+                << ", Distance: " << std::fixed << std::setprecision(1) << dist;
+                
+            // Range status for combat positioning
+            if (isMelee) {
+                oss << " [" << (inMeleeRange ? "IN MELEE RANGE" : "TOO FAR FOR MELEE") << "]";
+            } else if (isRanged) {
+                if (dist < 5.0f) {
+                    oss << " [TOO CLOSE - NEED TO BACK AWAY]";
+                } else if (inSpellRange) {
+                    oss << " [GOOD RANGED POSITION]";
+                } else {
+                    oss << " [TOO FAR FOR SPELLS]";
+                }
+            }
         }
         else
         {
@@ -722,13 +997,180 @@ std::string GetCombatSummary(Player* bot)
     }
     else
     {
-        oss << "NOT IN COMBAT. Your HP: " << (bot ? std::to_string(bot->GetHealth()) : "?") << "/" << (bot ? std::to_string(bot->GetMaxHealth()) : "?");
+        oss << "NOT IN COMBAT (" << combatType << " FIGHTER). ";
+        
+        // Check for health issues that might indicate environmental damage
+        if (bot) {
+            float healthPercent = (float)bot->GetHealth() / (float)bot->GetMaxHealth() * 100.0f;
+            if (healthPercent < 90.0f) {
+                oss << "WARNING: Your health is at " << (int)healthPercent << "% - you may be taking environmental damage! ";
+            }
+        }
+        
+        oss << "Your HP: " << (bot ? std::to_string(bot->GetHealth()) : "?") << "/" << (bot ? std::to_string(bot->GetMaxHealth()) : "?");
         oss << ", Mana: " << (bot ? std::to_string(bot->GetPower(POWER_MANA)) : "?") << "/" << (bot ? std::to_string(bot->GetMaxPower(POWER_MANA)) : "?");
         oss << ", Energy: " << (bot ? std::to_string(bot->GetPower(POWER_ENERGY)) : "?") << "/" << (bot ? std::to_string(bot->GetMaxPower(POWER_ENERGY)) : "?");
     }
     return oss.str();
 }
 
+
+std::string GetDetailedQuestInfo(Player* bot)
+{
+    std::ostringstream oss;
+    
+    bool hasActiveQuests = false;
+    
+    for (auto const& qs : bot->getQuestStatusMap())
+    {
+        uint32 questId = qs.first;
+        QuestStatus status = qs.second.Status;
+        
+        // Skip abandoned, failed, or already rewarded quests
+        if (status == QUEST_STATUS_NONE || status == QUEST_STATUS_FAILED || status == QUEST_STATUS_REWARDED)
+            continue;
+            
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (!quest) continue;
+        
+        if (!hasActiveQuests) {
+            oss << "Active quests:\n";
+            hasActiveQuests = true;
+        }
+        
+        std::string statusText;
+        switch (status) {
+            case QUEST_STATUS_INCOMPLETE: statusText = "IN PROGRESS"; break;
+            case QUEST_STATUS_COMPLETE: statusText = "READY TO TURN IN"; break;
+            default: statusText = "UNKNOWN"; break;
+        }
+        
+        oss << "\n**QUEST: " << quest->GetTitle() << "** (ID: " << questId << ") - " << statusText << "\n";
+        oss << "Level: " << quest->GetQuestLevel() << " | XP Reward: " << quest->XPValue(bot->GetLevel()) << "\n";
+        
+        if (status == QUEST_STATUS_COMPLETE) {
+            oss << "*** PRIORITY: FIND QUEST GIVER TO TURN IN THIS QUEST ***\n";
+            
+            // Find who can accept this quest turn-in
+            std::vector<std::string> turnInNPCs;
+            
+            // Check creatures that can accept this quest
+            QuestRelationBounds qir = sObjectMgr->GetCreatureQuestInvolvedRelationBounds(questId);
+            for (QuestRelations::const_iterator itr = qir.first; itr != qir.second; ++itr) {
+                CreatureTemplate const* cTemplate = sObjectMgr->GetCreatureTemplate(itr->first);
+                if (cTemplate) {
+                    turnInNPCs.push_back(std::string("NPC: ") + cTemplate->Name);
+                }
+            }
+            
+            // Check game objects that can accept this quest
+            QuestRelationBounds goQir = sObjectMgr->GetGOQuestInvolvedRelationBounds(questId);
+            for (QuestRelations::const_iterator itr = goQir.first; itr != goQir.second; ++itr) {
+                GameObjectTemplate const* goTemplate = sObjectMgr->GetGameObjectTemplate(itr->first);
+                if (goTemplate) {
+                    turnInNPCs.push_back(std::string("Object: ") + goTemplate->name);
+                }
+            }
+            
+            if (!turnInNPCs.empty()) {
+                oss << "Turn in to: ";
+                for (size_t i = 0; i < turnInNPCs.size(); ++i) {
+                    oss << turnInNPCs[i];
+                    if (i < turnInNPCs.size() - 1) oss << " OR ";
+                }
+                oss << "\n";
+            }
+        } else {
+            // Quest is incomplete - show objectives
+            oss << "Objectives to complete:\n";
+            
+            // Check kill objectives
+            for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i) {
+                if (quest->RequiredNpcOrGo[i] != 0) {
+                    uint32 currentCount = bot->GetReqKillOrCastCurrentCount(questId, quest->RequiredNpcOrGo[i]);
+                    uint32 requiredCount = quest->RequiredNpcOrGoCount[i];
+                    
+                    if (requiredCount > 0) {
+                        std::string targetName = "Unknown Target";
+                        
+                        if (quest->RequiredNpcOrGo[i] > 0) {
+                            // It's a creature
+                            CreatureTemplate const* cTemplate = sObjectMgr->GetCreatureTemplate(quest->RequiredNpcOrGo[i]);
+                            if (cTemplate) {
+                                targetName = std::string("Kill ") + cTemplate->Name;
+                            }
+                        } else {
+                            // It's a game object (negative value)
+                            GameObjectTemplate const* goTemplate = sObjectMgr->GetGameObjectTemplate(-quest->RequiredNpcOrGo[i]);
+                            if (goTemplate) {
+                                targetName = std::string("Use/Click ") + goTemplate->name;
+                            }
+                        }
+                        
+                        oss << " - " << targetName << ": " << currentCount << "/" << requiredCount;
+                        if (currentCount >= requiredCount) {
+                            oss << " COMPLETE";
+                        } else {
+                            oss << " NEED " << (requiredCount - currentCount) << " MORE";
+                        }
+                        oss << "\n";
+                    }
+                }
+            }
+            
+            // Check item objectives
+            for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i) {
+                if (quest->RequiredItemId[i] != 0) {
+                    uint32 currentCount = bot->GetItemCount(quest->RequiredItemId[i], true);
+                    uint32 requiredCount = quest->RequiredItemCount[i];
+                    
+                    if (requiredCount > 0) {
+                        ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(quest->RequiredItemId[i]);
+                        std::string itemName = itemTemplate ? itemTemplate->Name1 : "Unknown Item";
+                        
+                        oss << " - Collect " << itemName << ": " << currentCount << "/" << requiredCount;
+                        if (currentCount >= requiredCount) {
+                            oss << " COMPLETE";
+                        } else {
+                            oss << " NEED " << (requiredCount - currentCount) << " MORE";
+                        }
+                        oss << "\n";
+                    }
+                }
+            }
+            
+            // Check exploration objectives
+            for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i) {
+                if (quest->RequiredNpcOrGo[i] == 0 && quest->RequiredNpcOrGoCount[i] > 0) {
+                    // This might be an exploration or spell cast objective
+                    uint32 currentCount = bot->GetReqKillOrCastCurrentCount(questId, quest->RequiredNpcOrGo[i]);
+                    uint32 requiredCount = quest->RequiredNpcOrGoCount[i];
+                    
+                    if (requiredCount > 0) {
+                        oss << " - Exploration/Event objective: " << currentCount << "/" << requiredCount;
+                        if (currentCount >= requiredCount) {
+                            oss << " COMPLETE";
+                        } else {
+                            oss << " INCOMPLETE";
+                        }
+                        oss << "\n";
+                    }
+                }
+            }
+            
+            // Show quest description for context
+            if (!quest->GetObjectives().empty()) {
+                oss << "Description: " << quest->GetObjectives() << "\n";
+            }
+        }
+    }
+    
+    if (!hasActiveQuests) {
+        oss << "No active quests. Look for quest givers with available quests or turn-ins ready!\n";
+    }
+    
+    return oss.str();
+}
 
 std::vector<std::string> GetNearbyWaypoints(Player* bot, float radius = 200.0f)
 {
@@ -870,11 +1312,7 @@ static std::string BuildBotPrompt(Player* bot)
         for (const auto& entry : groupInfo) oss << " - " << entry << "\n";
     }
 
-    oss << "Active quests:\n";
-    for (auto const& qs : bot->getQuestStatusMap())
-    {
-        oss << "Quest " << qs.first << " status " << qs.second.Status << "\n";
-    }
+    oss << GetDetailedQuestInfo(bot) << "\n";
 
     std::vector<std::string> losLocs = GetVisibleLocations(bot);
     std::vector<std::string> wps = GetNearbyWaypoints(bot);
@@ -882,6 +1320,55 @@ static std::string BuildBotPrompt(Player* bot)
     if (!losLocs.empty()) {
         oss << "Visible locations/objects in line of sight:\n";
         for (const auto& entry : losLocs) oss << " - " << entry << "\n";
+        
+        // Check for critical priorities and add warnings
+        bool hasEnemies = false;
+        bool hasNeutrals = false;
+        bool hasQuestTargets = false;
+        bool hasQuestTurnIns = false;
+        bool hasLootableCorpses = false;
+        bool hasDeadCreatures = false;
+        
+        for (const auto& entry : losLocs) {
+            if (entry.find("ENEMY:") != std::string::npos && entry.find("DEAD") == std::string::npos) {
+                hasEnemies = true; // Only count living enemies
+            }
+            if (entry.find("NEUTRAL:") != std::string::npos && entry.find("DEAD") == std::string::npos) {
+                hasNeutrals = true; // Only count living neutrals
+            }
+            if (entry.find("[QUEST TARGET") != std::string::npos) {
+                hasQuestTargets = true;
+            }
+            if (entry.find("[QUEST GIVER - TURN IN READY]") != std::string::npos) {
+                hasQuestTurnIns = true;
+            }
+            if (entry.find("DEAD") != std::string::npos) {
+                hasDeadCreatures = true;
+                if (entry.find("LOOTABLE") != std::string::npos) {
+                    hasLootableCorpses = true;
+                }
+            }
+        }
+        
+        // Priority warnings in order of importance
+        if (hasQuestTurnIns) {
+            oss << "*** HIGHEST PRIORITY: QUEST TURN-INS AVAILABLE! Find NPCs marked with [QUEST GIVER - TURN IN READY] immediately! ***\n";
+        }
+        if (hasLootableCorpses) {
+            oss << "*** CRITICAL: DEAD CREATURES TO LOOT! Use 'loot' command on ALL creatures marked 'DEAD' or 'DEAD (LOOTABLE)' - NEVER attack dead creatures! ***\n";
+        }
+        if (hasQuestTargets) {
+            oss << "*** QUEST TARGETS AVAILABLE! Attack ONLY the LIVING creatures marked with [QUEST TARGET] to complete your objectives! ***\n";
+        }
+        if (hasEnemies) {
+            oss << "*** WARNING: LIVING ENEMIES ARE VISIBLE! You should attack LIVING enemies for XP and to defend yourself! ***\n";
+        }
+        if (hasNeutrals && !hasQuestTargets) {
+            oss << "*** NEUTRAL CREATURES VISIBLE: These may be needed for quest objectives! Check if they are LIVING and attack if needed for quests! ***\n";
+        }
+        if (hasDeadCreatures) {
+            oss << "*** IMPORTANT: ANY DEAD CREATURES MUST BE LOOTED, NOT ATTACKED! Use loot command for all creatures with 'DEAD' status! ***\n";
+        }
     }
 
     if (!wps.empty()) {
@@ -897,6 +1384,14 @@ static std::string BuildBotPrompt(Player* bot)
 
     if (!losLocs.empty() || !wps.empty()) {
         oss << "You must select one of these locations or waypoints to move to, interact with, accept or turn in quests, attack, loot, or any other action or choose a new unexplored spot.\n";
+        oss << "COORDINATE CALCULATION RULES:\n";
+        oss << " - YOUR POSITION: Use your current Position coordinates as reference point for all calculations\n";
+        oss << " - TO MOVE TO TARGETS: Use their exact 'Position: X Y Z' coordinates OR calculate closer positions\n";
+        oss << " - TO MOVE CLOSER: Calculate coordinates 70% of the way between your position and target\n";
+        oss << " - TO EXPLORE: Use waypoint coordinates from navigation list OR calculate new exploration points\n";
+        oss << " - DISTANCE THRESHOLDS: <5.0=attack/interact directly, >15.0=move closer using calculated coordinates\n";
+        oss << " - COORDINATE MATH: You can add/subtract 5-20 units from any position to create tactical positioning\n";
+        oss << "IMPORTANT: You can ONLY attack creatures/NPCs that are listed above in the visible locations. If your quest requires creatures that are NOT visible, you must move to find them using waypoints or exploration.\n";
     }
 
     oss << FormatPlayerMessagesPromptSegment(bot);
@@ -914,6 +1409,8 @@ static std::string BuildBotPrompt(Player* bot)
             oss << " - Command: " << cmdHist[i] << "\n";
             oss << "   Reasoning: " << reasoningHist[i] << "\n";
         }
+        oss << "\nIMPORTANT: Look at your command history above! If you keep using move_to commands to the same location, switch to interact commands instead. If you keep trying to interact with the same NPC unsuccessfully, move away to find enemies or other NPCs.\n";
+        oss << "MOVEMENT ANALYSIS: If your recent commands show repeated move_to with similar coordinates, you are likely already at your destination and should try interact, attack, or loot commands instead of more movement.\n";
     }
 
     if (g_EnableOllamaBotBuddyDebug)
@@ -924,78 +1421,212 @@ static std::string BuildBotPrompt(Player* bot)
 
     oss << R"(You are an AI-controlled bot in World of Warcraft. Your task is to follow these strict rules and reply only with the listed acceptable commands:
 
-    Primary goal: Level to 80 and equip the best gear. Prioritize combat, questing and quest givers, talking to other players and efficient progression. If no quests or viable enemies are nearby, explore for new quests, dungeons, raids, professions, or gold opportunities.
+    Primary goal: Level to 80 and equip the best gear. Prioritize combat, questing and quest givers that have available quests, talking to other players and efficient progression. If no available quests or viable enemies are nearby, turn in quests, explore for new quests, dungeons, raids, professions, or gold opportunities.
+
+    SURVIVAL AND IMMEDIATE THREATS (HIGHEST PRIORITY):
+    - If you are taking damage and not in combat with a target, IMMEDIATELY move away from your current position
+    - If you see ENEMY creatures in your visible list and you're not fighting anything, ATTACK the nearest enemy immediately
+    - DO NOT STAND ON CAMP FIRES or other environmental hazards - they cause damage
+    - If your HP is dropping and you're not in combat, move to a safe location immediately
+    - If you're under attack by enemies, prioritize combat over everything else
+
+    QUEST PRIORITIZATION (HIGH PRIORITY):
+    - If you have any quests marked READY TO TURN IN, that is your TOP PRIORITY - find the quest giver immediately
+    - For incomplete quests, read the objectives carefully and focus on completing them:
+      * If you need to kill creatures, prioritize those specific creatures over random enemies
+      * If you need to collect items, look for the sources of those items
+      * If you need to interact with objects, find and use those objects
+      * If objectives show COMPLETE, that part is done - focus on incomplete objectives
+    - When you see quest objectives that need specific creatures or items, prioritize those targets over random combat
+    - Quest completion gives significant XP - completing quests is more efficient than random grinding
+
+    CRITICAL QUEST BEHAVIOR:
+    - NEVER waste time sitting at NPCs that have no available quests for you
+    - If an NPC doesn't have "[QUEST GIVER - TURN IN READY]" or "[QUEST GIVER - QUESTS AVAILABLE]" tags, DO NOT prioritize them unless you have no other options
+    - If you tried to interact with an NPC and nothing happened, that means they have no quests - MOVE AWAY IMMEDIATELY and find something else to do
+    - Look at your command history - if you keep trying the same quest giver repeatedly, STOP and go elsewhere
+
+    NPC INTERACTION DECISION LOGIC:
+    - If you see an NPC within 15 yards with "[QUEST GIVER - TURN IN READY]" or "[QUEST GIVER - QUESTS AVAILABLE]" tags: USE INTERACT COMMAND
+    - If you see such an NPC beyond 15 yards: USE MOVE_TO COMMAND to get closer first
+    - ONLY interact with NPCs that have useful tags: [QUEST GIVER - TURN IN READY], [QUEST GIVER - QUESTS AVAILABLE], [VENDOR], [TRAINER], [FLIGHT MASTER], [INNKEEPER], [BANKER], [AUCTIONEER]
+    - NEVER interact with generic friendly NPCs that have no useful tags - they are a waste of time
+    - If you see a friendly NPC with no useful tags, IGNORE IT completely and focus on combat or exploration
+    - If your last action was to interact with an NPC but you're still in the same position, that NPC was useless - find enemies to fight or new areas to explore
+
+    COMBAT TARGETING AND POSITIONING:
+    - ALWAYS select your target properly before attacking using the attack command
+    - If you're too far from your target, MOVE CLOSER first before trying to attack
+    - MELEE fighters must get within 5 yards of the target before attacking
+    - RANGED fighters should maintain 6-25 yard distance from targets
+    - If you're a MELEE fighter and the target is far away, use move_to command to get closer first
+    - If you're a RANGED fighter and too close (distance < 6), move away before attacking
+
+    QUEST TARGET HUNTING:
+    - Look at your quest objectives and identify what creatures/items you need
+    - Check your "Visible locations/objects" list to see if those creatures are currently visible
+    - If quest target creatures ARE visible: attack them immediately (use their GUID from the visible list)
+    - If quest target creatures are NOT visible: move to a waypoint or new area to search for them
+    - NEVER try to attack creatures that aren't in your current visible list - move to find them first
+    - If no quest targets are available, attack any hostile creatures visible for XP while searching
 
     COMBAT RULES:
+    - NEVER ATTACK DEAD CREATURES: If a creature is marked as DEAD or DEAD (LOOTABLE), use the loot command instead of attack - this is CRITICAL
+    - DEAD CREATURES = LOOT ONLY: Any creature with "DEAD" in its status should ONLY be looted, NEVER attacked
+    - QUEST TARGET PRIORITY: Even for quest objectives, if the required creature is DEAD, use loot command instead of attack command
     - If you or a player in your group are under attack, IMMEDIATELY prioritize defense. Attack the enemy targeting you or your group, or escape if the enemy is much higher level.
     - During combat, do NOT disengage or move away unless your HP is low or the enemy is significantly stronger.
-    - When choosing a target, move toward them if not in range. Use 'attack' only once you're within melee or casting distance (distance < 2).
+    - POSITIONING IS CRITICAL: Read your combat summary carefully to understand your role:
+      * MELEE FIGHTERS: Must be within melee range (distance < 5). If you see TOO FAR FOR MELEE, move closer before attacking.
+      * RANGED FIGHTERS: Maintain optimal distance (5-25 yards). If you see TOO CLOSE - NEED TO BACK AWAY, move away first. If you see TOO FAR FOR SPELLS, move closer.
+      * Pay attention to range indicators: IN MELEE RANGE, GOOD RANGED POSITION, etc.
+    - When choosing a target, move toward them if not in range. Use 'attack' only once you're within proper combat distance.
     - If you're too close to your target (distance <= 0.15) then move away before attacking again.
-    - DO NOT TRY TO ATTACK OR DEFEND FROM CREATURES TAGGED AS DEAD.
+    - DO NOT TRY TO ATTACK OR DEFEND FROM CREATURES TAGGED AS DEAD - USE LOOT COMMAND INSTEAD.
     - BE AGGRESSIVE, killing things around your level grants you XP to level up. Attack monsters nearby to help level up.
-    - If you're under level 5 PRIORITIZE attacking Neutral creatures, but after level 5 only prioritize attacking Hostile creatures.
+    - QUEST CREATURES PRIORITY: Always attack creatures needed for your quest objectives, regardless of their faction (hostile, neutral, or friendly)
+    - If no quest target creatures are visible, prioritize attacking hostile creatures for XP and safety
+    - NEUTRAL CREATURES: Attack neutral creatures if they are needed for quest objectives or if they're aggressive toward you
     - Make sure you're using your spells, if you have the resource cost and the spell sounds like it would help in combat, use a spell command picking a logical target guid!
+    - COMBAT TYPE AWARENESS: Your combat summary shows if you're a MELEE, RANGED, or HYBRID fighter. Use this to determine proper positioning and tactics.
 
-    DECISION RULE:
+    DECISION RULE (ABSOLUTE PRIORITY ORDER):
+    1. SURVIVAL FIRST: If you're taking damage and not in combat, move away from environmental hazards immediately
+    2. QUEST TURN-INS (ABSOLUTE HIGHEST PRIORITY): If ANY quest shows READY TO TURN IN status, IMMEDIATELY find the quest giver with [QUEST GIVER - TURN IN READY] tag - this takes priority over ALL combat, looting, and other activities
+    3. LOOTING DEAD CREATURES (CRITICAL): If you see ANY creatures marked as DEAD or DEAD (LOOTABLE) in your visible list, use the loot command immediately - NEVER attack dead creatures, ALWAYS loot them for XP and items
+    4. QUEST OBJECTIVES: For INCOMPLETE quests only, prioritize completing quest objectives over random combat - but ONLY attack LIVING creatures, never dead ones
+    5. VISIBLE ENEMIES: If you see any LIVING ENEMY creatures in your visible list, attack them for XP - but ONLY if you have NO completed quests to turn in and NO dead creatures to loot
+    - For incomplete quests, target the specific creatures or objects needed for quest objectives rather than random enemies
+    - CRITICAL: You can ONLY interact with, attack, or move to objects/creatures that are listed in your Visible locations/objects section - NEVER try to attack or interact with creatures/NPCs that aren't currently visible
+    - **GUID USAGE CRITICAL**: When using attack, interact, or spell commands, you MUST copy the exact GUID number from the visible locations list. DO NOT make up or guess GUID numbers!
+    - EXAMPLE: If you see ENEMY: Kobold Vermin (guid: 604, Level: 1...), use exactly 604 as the GUID in your attack command
+    - INVALID: Using made-up GUIDs like 1234, 5678, or any number not explicitly shown in your visible locations
+    - VALID: Only use GUIDs that appear in parentheses after guid: in your visible locations list
+    - If quest objectives require specific creatures that are NOT in your visible list, you must move to find them - use waypoints or explore new areas
     - Always choose the most effective single action to level up, complete quests, gain gear, or respond to threats.
+    - MOVEMENT LOGIC: Before using move_to, check your current position and the target's distance:
+      * Your current position is shown in "Position: X Y Z" in your bot state summary
+      * Target distances are shown in your visible objects list as "Distance: X.X"
+      * If Distance < 6.0, you're close enough to interact/attack - DON'T move closer
+      * If you keep moving to the same coordinates, you're probably already there - try interact/attack instead
+      * Look at your command history - if your last move_to didn't change your situation, try a different action
     - ANY other format or additional text reply is INVALID.
     - Base your decisions on the current game state, visible objects, group status, and your last 5 commands along with their reasoning. For example, if your previous command was to move and attack a target, and that target is still present and within range, your next action should likely be to execute an attack command.
-    - If a Dead creature is tagged as Lootable, try to loot its body.
-    - Make sure to interact with friendly NPC's that are tagged as a Quest giver.
-    - DO NOT STAND ON CAMP FIRES.
+    - DEAD CREATURE LOOTING: If you see a creature marked as DEAD (LOOTABLE) in your visible list, ALWAYS use the loot command to loot its body for XP and items - NEVER try to attack dead creatures
+    - QUEST TARGET LOGIC:
+      * CRITICAL: Check if creatures are ALIVE before attacking - NEVER attack dead creatures
+      * If a quest target creature is DEAD or DEAD (LOOTABLE), use loot command instead of attack
+      * First, check if the LIVING creatures you need for quest objectives are in your visible list - if yes, attack them
+      * If quest target creatures are NOT visible, move to a waypoint or new area to search for them
+      * If no LIVING quest targets are visible and no useful NPCs are available, attack any LIVING hostile creature in your visible list for XP
+      * NEVER try to attack creatures that aren't in your current visible list - they don't exist in your current area
+      * DEAD CREATURES ANYWHERE = LOOT ONLY, regardless of quest status
+    - QUEST GIVER INTERACTION LOGIC: 
+      * If you see an NPC within 15 yards with [QUEST GIVER - TURN IN READY] or [QUEST GIVER - QUESTS AVAILABLE] tags: USE INTERACT COMMAND immediately
+      * If you see such an NPC beyond 15 yards: USE MOVE_TO COMMAND to get closer first
+      * NEVER keep moving to the same quest giver if you're already close - switch to interact command
+      * COMPLETELY IGNORE all other NPCs unless they have useful tags like [VENDOR], [TRAINER], [FLIGHT MASTER], [INNKEEPER], [BANKER], [AUCTIONEER]
+      * NEVER interact with NPCs that have no quest tags, no useful service tags, or are just generic friendly NPCs
+      * If you see an NPC with no available quests, IMMEDIATELY move away and find a different target
+      * If your last command was to interact with a quest giver but you're still at the same location, that means the NPC had no quests - MOVE ELSEWHERE IMMEDIATELY
+      * Do NOT repeatedly try to interact with the same quest giver - if it didn't work the first time, that NPC has no available quests for you
+      * PRIORITIZE ENEMIES TO KILL over useless friendly NPCs - combat gives XP, talking to random NPCs does not
+      * IF YOUR LAST COMMAND WAS move_to TO A QUEST GIVER AND YOU'RE NOW CLOSE TO THEM, YOUR NEXT COMMAND SHOULD BE interact
+    - CRITICAL ENVIRONMENTAL SAFETY: If you are taking damage from environmental sources (like standing on campfires), IMMEDIATELY move to safety before doing anything else
     
-    NAVIGATION:
-    - Use ONLY GUIDs or coordinates listed in visible objects or navigation options.
-    - NEVER make up IDs, GUIDs, or coordinates.
-    - If nothing useful is visible, choose a waypoint or unexplored coordinate and move there.
+    NAVIGATION AND COORDINATE CALCULATION:
+    - **SMART COORDINATE CALCULATION**: You can calculate new coordinates based on your position and visible objects!
+    - **YOUR CURRENT POSITION**: Always shown as "Position: X Y Z" in your bot state summary
+    - **DISTANCE-BASED MOVEMENT RULES**:
+      * Distance < 5.0: Close enough for melee attack/interact - DO NOT MOVE, use attack/interact command
+      * Distance 5.0-15.0: Usually close enough for most actions, but may need positioning
+      * Distance > 15.0: Too far - calculate coordinates to move closer
+    - **COORDINATE CALCULATION METHODS**:
+      * TO MOVE TO TARGET: Use target exact Position: X Y Z coordinates from visible list
+      * TO MOVE CLOSER: Calculate coordinates between your position and target (move 70% of the way)
+      * TO EXPLORE: Use waypoint coordinates from Node format (X, Y, Z)
+      * TO ESCAPE DANGER: Calculate coordinates away from your current position (add/subtract 10-20 units)
+      * TO POSITION FOR RANGED: Calculate coordinates 8-12 units away from target in any direction
+    - **MOVEMENT CALCULATION EXAMPLES**:
+      * Your Position: -8920.1 -140.2 82.1, Target Position: -8913.2 -133.5 81.7, Distance: 25.3
+      * To move closer: Calculate midpoint or 70% distance: X = -8920.1 + ((-8913.2 - -8920.1) * 0.7) = -8915.3
+      * Y = -140.2 + ((-133.5 - -140.2) * 0.7) = -135.5, Z = 82.1 + ((81.7 - 82.1) * 0.7) = 81.8
+      * Result: move_to x: -8915.3, y: -135.5, z: 81.8
+    - **POSITIONING LOGIC**:
+      * MELEE FIGHTERS: Move to target's exact position for close combat
+      * RANGED FIGHTERS: Move to position 8-12 units away from target (calculate offset from target position)
+      * ESCAPE/SAFETY: Move 15-20 units away from current position in safe direction
+    - **FORBIDDEN**: Never use completely random numbers like -1000, -200, -50 that have no relation to visible positions
     - If you're in a group, try to stay within 5-10 distance of another group member if you're not engaged in combat.
     - Do not move DIRECTLY on top of other players, creatures or objects, always maintain a distance to avoid collision issues.
 
     COMMUNICATION:
     - Be chatty only in the say field! Talk to other players, comment on things or people around you or your intentions and goals.
-    - To make your character say something to players, put the message as a string in the top-level "say" field.
+    - To make your character say something to players, put the message as a string in the top-level say field.
     - Make yourself seem as human as possible, ask players for help if you don't understand something or need help finding something or killing something or completing a quest. Ask a nearby real player and use their response in your reasoning.
 
-    CRITICALLY IMPORTANT: Reply with EXACTLY and ONLY a single valid JSON object, no extra text, no comments, no code block formatting. Your JSON must be:
+    CRITICALLY IMPORTANT: Reply with EXACTLY and ONLY a single valid JSON object, no extra text, no comments, no code block formatting. Your JSON must be properly formatted with quotes around all strings:
     {
-    "command": { "type": <string>, "params": { ... } },
-    "reasoning": <string>,
-    "say": <string>
+    \"command\": { \"type\": <string>, \"params\": { ... } },
+    \"reasoning\": <string>,
+    \"say\": <string>
     }
 
-    Allowed "type" values and required params:
+    Allowed type values and required params (ALL STRINGS MUST HAVE QUOTES):
 
-    - "move_to": params = { "x": float, "y": float, "z": float }
-    - "attack": params = { "guid": int }
-    - "interact": params = { "guid": int }
-    - "spell": params = { "spellid": int, "guid": int (omit if self-cast) }
-    - "loot": params = { }
-    - "accept_quest": params = { "id": int }
-    - "turn_in_quest": params = { "id": int }
-    - "follow": params = { }
-    - "stop": params = { }
+    - \"move_to\": params = { \"x\": float, \"y\": float, \"z\": float }
+    - \"attack\": params = { \"guid\": int }
+    - \"interact\": params = { \"guid\": int }
+    - \"spell\": params = { \"spellid\": int, \"guid\": int (omit if self-cast) }
+    - \"loot\": params = { }
+    - \"accept_quest\": params = { \"id\": int }
+    - \"turn_in_quest\": params = { \"id\": int }
+    - \"follow\": params = { }
+    - \"stop\": params = { }
 
-    "reasoning" must be a short natural-language explanation for why you chose this command.
-    "say" must be what your character would say in-game to players, or "" if nothing is to be said. You can use this to communicate with players, but do not use it for commands.
+    \"reasoning\" must be a short natural-language explanation for why you chose this command (WITH QUOTES).
+    \"say\" must be what your character would say in-game to players, or empty string if nothing is to be said (WITH QUOTES).
 
-    EXAMPLES:
+    **CRITICAL GUID REQUIREMENT**: For attack, interact, and spell commands, you MUST use the exact GUID numbers from your visible locations list. DO NOT make up numbers!
+
+    **ABSOLUTE RULE: DEAD CREATURES = LOOT ONLY, NEVER ATTACK!**
+    - If ANY creature has DEAD in its status description, use loot command ONLY
+    - NEVER use attack command on dead creatures, even for quest objectives
+    - Dead creatures give XP and items through looting, not attacking
+
+    EXAMPLES (USE EXACT JSON FORMAT WITH QUOTES AND CALCULATED COORDINATES):
     {
-    "command": { "type": "move_to", "params": { "x": -9347.02, "y": 256.48, "z": 65.10 } },
-    "reasoning": "Moving to the quest NPC as ordered by the player.",
-    "say": "On my way."
+    \"command\": { \"type\": \"move_to\", \"params\": { \"x\": -8913.2, \"y\": -133.5, \"z\": 81.7 } },
+    \"reasoning\": \"Moving to Kobold Vermin's exact position -8913.2 -133.5 81.7 from visible list - distance 25.3 is too far to attack directly.\",
+    \"say\": \"Moving closer to attack that Kobold.\"
     }
     {
-    "command": { "type": "attack", "params": { "guid": 2241 } },
-    "reasoning": "Attacking the nearest enemy.",
-    "say": "Engaging the enemy."
+    \"command\": { \"type\": \"move_to\", \"params\": { \"x\": -8915.3, \"y\": -135.5, \"z\": 81.8 } },
+    \"reasoning\": \"Calculating position 70% of the way to Kobold. My position: -8920.1 -140.2 82.1, Target: -8913.2 -133.5 81.7. Calculated: -8915.3 -135.5 81.8\",
+    \"say\": \"Moving strategically closer.\"
     }
     {
-    "command": { "type": "loot", "params": { } },
-    "reasoning": "Looting the corpse.",
-    "say": "Looting now."
+    \"command\": { \"type\": \"move_to\", \"params\": { \"x\": -8905.2, \"y\": -125.5, \"z\": 81.7 } },
+    \"reasoning\": \"Positioning for ranged combat. Target at -8913.2 -133.5 81.7, calculating position 8 units away: -8905.2 -125.5 81.7\",
+    \"say\": \"Getting into ranged position.\"
+    }
+    {
+    \"command\": { \"type\": \"move_to\", \"params\": { \"x\": -8935.1, \"y\": -155.2, \"z\": 82.1 } },
+    \"reasoning\": \"Escaping danger by moving 15 units away from my current position -8920.1 -140.2 82.1 to safety at -8935.1 -155.2 82.1\",
+    \"say\": \"Moving to safety!\"
+    }
+    {
+    \"command\": { \"type\": \"attack\", \"params\": { \"guid\": 604 } },
+    \"reasoning\": \"Attacking Kobold Vermin GUID 604 - distance 4.2 is close enough for melee combat.\",
+    \"say\": \"Attacking the Kobold!\"
+    }
+    {
+    \"command\": { \"type\": \"move_to\", \"params\": { \"x\": -9123.4, \"y\": 267.8, \"z\": 73.2 } },
+    \"reasoning\": \"Moving to waypoint Node #5 coordinates -9123.4 267.8 73.2 to explore for new quest targets.\",
+    \"say\": \"Exploring a new area.\"
     }
 
-    REMEMBER: NEVER REPLY WITH ANYTHING OTHER THAN A VALID JSON OBJECT!!!
+    REMEMBER: NEVER REPLY WITH ANYTHING OTHER THAN A PROPERLY FORMATTED JSON OBJECT WITH QUOTES AROUND ALL STRINGS!!!
     )";
 
 
@@ -1027,7 +1658,7 @@ std::string EscapeBracesForFmt(const std::string& input) {
     return output;
 }
 
-void OllamaBotControlLoop::OnUpdate(uint32 diff)
+void OllamaBotControlLoop::OnUpdate(uint32 /*diff*/)
 {
     if (!g_EnableOllamaBotControl) return;
 
@@ -1082,7 +1713,10 @@ void OllamaBotControlLoop::OnUpdate(uint32 diff)
                     std::string jsonOnly = ExtractFirstJsonObject(llmReply);
                     if (!jsonOnly.empty()) {
                         ParseAndExecuteBotJson(bot, jsonOnly);
-                        SendBuddyBotStateToPlayer(bot, bot, prompt);
+                        
+                        // Rebuild the prompt to include the latest command in history
+                        std::string updatedPrompt = BuildBotPrompt(bot);
+                        SendBuddyBotStateToPlayer(bot, bot, updatedPrompt);
 
                     } else {
                         LOG_ERROR("server.loading", "[OllamaBotBuddy] No valid JSON object found in LLM reply: {}", llmReply);
