@@ -18,6 +18,7 @@
 #include "GameObject.h"
 #include "TravelMgr.h"
 #include "TravelNode.h"
+#include "PathGenerator.h"
 #include <atomic>
 #include <unordered_map>
 #include <iomanip>
@@ -119,11 +120,29 @@ bool ParseAndExecuteBotJson(Player* bot, const std::string& jsonStr)
         if (type == "move_to")
         {
             if (params.contains("x") && params.contains("y") && params.contains("z")) {
+                float destX = params["x"].get<float>();
+                float destY = params["y"].get<float>();
+                float destZ = params["z"].get<float>();
+                
+                // Validate that the destination is pathable like a real player would
+                PathGenerator pathValidator(bot);
+                pathValidator.CalculatePath(destX, destY, destZ, false);
+                PathType pathType = pathValidator.GetPathType();
+                
+                // Allow normal paths, incomplete paths (partial), and shortcuts as valid
+                uint32 validPathTypes = PATHFIND_NORMAL | PATHFIND_INCOMPLETE | PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH;
+                
+                if (!(pathType & validPathTypes) || (pathType & PATHFIND_NOPATH)) {
+                    LOG_DEBUG("server.loading", "[OllamaBotBuddy] Invalid destination for move_to: ({}, {}, {}) - PathType: {}", 
+                             destX, destY, destZ, pathType);
+                    return false; // Reject invalid movement destinations
+                }
+                
                 command.type = BotControlCommandType::MoveTo;
                 command.args = {
-                    std::to_string(params["x"].get<float>()),
-                    std::to_string(params["y"].get<float>()),
-                    std::to_string(params["z"].get<float>())
+                    std::to_string(destX),
+                    std::to_string(destY),
+                    std::to_string(destZ)
                 };
             } else {
                 LOG_ERROR("server.loading", "[OllamaBotBuddy] move_to missing parameter");
