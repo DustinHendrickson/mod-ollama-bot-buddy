@@ -1454,7 +1454,7 @@ static std::string BuildBotPrompt(Player* bot)
     - For incomplete quests, target the specific creatures or objects needed for quest objectives rather than random enemies
     - CRITICAL: You can ONLY interact with, attack, or move to objects/creatures that are listed in your "Visible locations/objects" section - NEVER try to attack or interact with creatures/NPCs that aren't currently visible
     - **GUID USAGE CRITICAL**: When using attack, interact, or spell commands, you MUST copy the exact GUID number from the visible locations list. DO NOT make up or guess GUID numbers!
-    - EXAMPLE: If you see "ENEMY: Kobold Vermin (guid: 604, Level: 1...)", use exactly 604 as the GUID in your attack command
+    - EXAMPLE: If you see 'ENEMY: Kobold Vermin (guid: 604, Level: 1...)', use exactly 604 as the GUID in your attack command
     - INVALID: Using made-up GUIDs like 1234, 5678, or any number not explicitly shown in your visible locations
     - VALID: Only use GUIDs that appear in parentheses after "guid:" in your visible locations list
     - If quest objectives require specific creatures that are NOT in your visible list, you must move to find them - use waypoints or explore new areas
