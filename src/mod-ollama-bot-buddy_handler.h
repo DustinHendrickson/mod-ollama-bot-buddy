@@ -14,7 +14,8 @@ public:
     void OnPlayerChat(Player* player, uint32_t type, uint32_t lang, std::string& msg) override;
     void OnPlayerChat(Player* player, uint32_t type, uint32_t lang, std::string& msg, Group* group) override;
     void OnPlayerChat(Player* player, uint32_t type, uint32_t lang, std::string& msg, Channel* channel) override;
+    void OnPlayerChat(Player* player, uint32_t type, uint32_t lang, std::string& msg, Player* receiver) override;
 
 private:
-    void ProcessChat(Player* player, uint32_t type, uint32_t lang, std::string& msg, Channel* channel = nullptr);
+    void ProcessChat(Player* player, uint32_t type, uint32_t lang, std::string& msg, Channel* channel = nullptr, Player* receiver = nullptr);
 };
