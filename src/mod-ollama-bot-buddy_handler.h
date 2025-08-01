@@ -9,7 +9,12 @@ extern std::mutex botPlayerMessagesMutex;
 class BotBuddyChatHandler : public PlayerScript
 {
 public:
-    BotBuddyChatHandler() : PlayerScript("BotBuddyChatHandler") {}
+    BotBuddyChatHandler() : PlayerScript("BotBuddyChatHandler", {
+        PLAYERHOOK_ON_CHAT,
+        PLAYERHOOK_ON_CHAT_WITH_GROUP,
+        PLAYERHOOK_ON_CHAT_WITH_CHANNEL,
+        PLAYERHOOK_ON_CHAT_WITH_RECEIVER
+    }) {}
 
     void OnPlayerChat(Player* player, uint32_t type, uint32_t lang, std::string& msg) override;
     void OnPlayerChat(Player* player, uint32_t type, uint32_t lang, std::string& msg, Group* group) override;
