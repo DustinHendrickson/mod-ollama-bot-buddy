@@ -15,25 +15,36 @@ std::mutex botPlayerMessagesMutex;
 
 void BotBuddyChatHandler::OnPlayerChat(Player* player, uint32_t type, uint32_t lang, std::string& msg)
 {
-    ProcessChat(player, type, lang, msg, nullptr);
+    ProcessChat(player, type, lang, msg, nullptr, nullptr);
 }
 void BotBuddyChatHandler::OnPlayerChat(Player* player, uint32_t type, uint32_t lang, std::string& msg, Group* /*group*/)
 {
-    ProcessChat(player, type, lang, msg, nullptr);
+    ProcessChat(player, type, lang, msg, nullptr, nullptr);
 }
 void BotBuddyChatHandler::OnPlayerChat(Player* player, uint32_t type, uint32_t lang, std::string& msg, Channel* channel)
 {
-    ProcessChat(player, type, lang, msg, channel);
+    ProcessChat(player, type, lang, msg, channel, nullptr);
 }
 
-void BotBuddyChatHandler::ProcessChat(Player* player, uint32_t type, uint32_t lang, std::string& msg, Channel* channel)
+void BotBuddyChatHandler::OnPlayerChat(Player* player, uint32_t type, uint32_t lang, std::string& msg, Player* receiver)
 {
-    LOG_INFO("server.loading", "ProcessChat: sender={} type={} lang={} msg='{}' channel={}", 
-    player ? player->GetName() : "NULL", type, lang, msg, channel ? channel->GetName() : "nullptr");
+    // For whispers, don't process in bot buddy - let ollama chat handle them
+    return;
+}
+
+void BotBuddyChatHandler::ProcessChat(Player* player, uint32_t type, uint32_t lang, std::string& msg, Channel* channel, Player* receiver)
+{
+    LOG_INFO("server.loading", "ProcessChat: sender={} type={} lang={} msg='{}' channel={} receiver={}", 
+    player ? player->GetName() : "NULL", type, lang, msg, 
+    channel ? channel->GetName() : "nullptr",
+    receiver ? receiver->GetName() : "nullptr");
 
     if (!player || msg.empty()) return;
     PlayerbotAI* senderAI = sPlayerbotsMgr->GetPlayerbotAI(player);
     if (senderAI && senderAI->IsBotAI()) return;
+
+    // For whispers, don't process - let ollama chat handle them
+    if (receiver) return;
 
     std::lock_guard<std::mutex> lock(botPlayerMessagesMutex);
 
